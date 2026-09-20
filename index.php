@@ -3,51 +3,66 @@ declare(strict_types=1);
 
 /*
 ========================================================
- VICKY BOT HOSTING
- Single-file GitHub -> Railway version
+ VICKY BOT HOSTING MANAGER
+ SINGLE FILE RAILWAY BUILD
 ========================================================
 */
 
-const BOT_TOKEN = '7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nYqI';
-const ADMIN_ID  = '8897821078';
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
+set_time_limit(0);
 
-const BASE_URL  = 'https://bot-hosting-production-7668.up.railway.app';
+/* ================= CONFIG ================= */
 
-const STORAGE   = __DIR__ . '/storage';
-const BOTS_DIR  = __DIR__ . '/storage/bots';
-const DATA_FILE = __DIR__ . '/storage/bots.json';
+const MANAGER_BOT_TOKEN = '7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nqYI';
+const MANAGER_ADMIN_ID  = '8897821078';
 
-const DAILY_LIMIT = 100;
+const RAILWAY_DOMAIN = 'https://bot-hosting-production-7668.up.railway.app';
 
+const DAILY_DEPLOY_LIMIT = 100;
 
 /*
-========================================================
- INITIALIZE
-========================================================
-*/
+ * Change this if you want the /start response
+ * for hosted bots.
+ */
+const START_OVERRIDE_MESSAGE =
+    "😏 Oye, /start mil gaya! Bot use karo, drama mat karo 😂";
 
-if (!is_dir(STORAGE)) {
-    @mkdir(STORAGE, 0755, true);
+/* ================= PATHS ================= */
+
+$BASE = __DIR__;
+
+$DATA = $BASE . '/vicky_data';
+$BOTS = $BASE . '/bots';
+$ZIPS = $BASE . '/zip';
+
+@mkdir($DATA, 0777, true);
+@mkdir($BOTS, 0777, true);
+@mkdir($ZIPS, 0777, true);
+
+$DB_FILE = $DATA . '/bots.json';
+$DEPLOY_FILE = $DATA . '/deploy_counter.json';
+$ZIP_CONFIG = $DATA . '/zip_config.json';
+$WEBHOOK_MARKER = $DATA . '/manager_webhook.txt';
+
+if (!file_exists($DB_FILE)) {
+    @file_put_contents($DB_FILE, '{}');
 }
 
-if (!is_dir(BOTS_DIR)) {
-    @mkdir(BOTS_DIR, 0755, true);
+if (!file_exists($ZIP_CONFIG)) {
+    @file_put_contents($ZIP_CONFIG, json_encode([
+        'mode' => '100',
+        'mb' => 100
+    ], JSON_PRETTY_PRINT));
 }
 
-if (!file_exists(DATA_FILE)) {
-    file_put_contents(DATA_FILE, '{}', LOCK_EX);
-}
+/* ================= HELPERS ================= */
 
-
-/*
-========================================================
- DATABASE
-========================================================
-*/
-
-function loadBots(): array
+function db(): array
 {
-    $raw = @file_get_contents(DATA_FILE);
+    global $DB_FILE;
+
+    $raw = @file_get_contents($DB_FILE);
 
     if (!$raw) {
         return [];
@@ -58,62 +73,382 @@ function loadBots(): array
     return is_array($data) ? $data : [];
 }
 
-
-function saveBots(array $bots): void
+function saveDb(array $data): void
 {
-    file_put_contents(
-        DATA_FILE,
-        json_encode(
-            $bots,
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
-        ),
-        LOCK_EX
+    global $DB_FILE;
+
+    @file_put_contents(
+        $DB_FILE,
+        json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
     );
 }
 
-
-/*
-========================================================
- HELPERS
-========================================================
-*/
-
-function h($value): string
+function tg(string $method, array $params = []): array
 {
-    return htmlspecialchars(
-        (string)$value,
-        ENT_QUOTES | ENT_SUBSTITUTE,
-        'UTF-8'
+    $url = 'https://api.telegram.org/bot' . MANAGER_BOT_TOKEN . '/' . $method;
+
+    $ch = curl_init($url);
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $params,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true
+    ]);
+
+    $response = curl_exec($ch);
+
+    if ($response === false) {
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        return [
+            'ok' => false,
+            'description' => $error
+        ];
+    }
+
+    curl_close($ch);
+
+    $json = json_decode($response, true);
+
+    return is_array($json)
+        ? $json
+        : [
+            'ok' => false,
+            'description' => 'Invalid Telegram response'
+        ];
+}
+
+function sendMsg(int|string $chat, string $text, ?array $keyboard = null): array
+{
+    $params = [
+        'chat_id' => $chat,
+        'text' => $text,
+        'parse_mode' => 'HTML'
+    ];
+
+    if ($keyboard !== null) {
+        $params['reply_markup'] = json_encode($keyboard);
+    }
+
+    return tg('sendMessage', $params);
+}
+
+function editMsg(
+    int|string $chat,
+    int $messageId,
+    string $text,
+    ?array $keyboard = null
+): array {
+    $params = [
+        'chat_id' => $chat,
+        'message_id' => $messageId,
+        'text' => $text,
+        'parse_mode' => 'HTML'
+    ];
+
+    if ($keyboard !== null) {
+        $params['reply_markup'] = json_encode($keyboard);
+    }
+
+    return tg('editMessageText', $params);
+}
+
+function answerCb(string $id, string $text = ''): void
+{
+    tg('answerCallbackQuery', [
+        'callback_query_id' => $id,
+        'text' => $text,
+        'show_alert' => false
+    ]);
+}
+
+function baseUrl(): string
+{
+    return rtrim(RAILWAY_DOMAIN, '/');
+}
+
+function botWebhookUrl(string $id): string
+{
+    return baseUrl() . '/?bot=' . rawurlencode($id);
+}
+
+function managerWebhookUrl(): string
+{
+    return baseUrl() . '/?manager=1';
+}
+
+function safeId(string $value): string
+{
+    return preg_replace('/[^a-zA-Z0-9_\-]/', '', $value);
+}
+
+function isAdmin(int|string $id): bool
+{
+    return (string)$id === MANAGER_ADMIN_ID;
+}
+
+/* ================= PROCESS ================= */
+
+function pidRunning(?int $pid): bool
+{
+    if (!$pid || $pid < 1) {
+        return false;
+    }
+
+    if (function_exists('posix_kill')) {
+        return @posix_kill($pid, 0);
+    }
+
+    $out = [];
+    @exec('ps -p ' . intval($pid) . ' -o pid=', $out);
+
+    return !empty($out);
+}
+
+function stopProcess(?int $pid): bool
+{
+    if (!$pid || $pid < 1) {
+        return true;
+    }
+
+    @exec('kill ' . intval($pid) . ' 2>/dev/null');
+
+    sleep(1);
+
+    if (pidRunning($pid)) {
+        @exec('kill -9 ' . intval($pid) . ' 2>/dev/null');
+    }
+
+    return true;
+}
+
+function phpBinary(): ?string
+{
+    if (defined('PHP_BINARY') && PHP_BINARY) {
+        return PHP_BINARY;
+    }
+
+    $paths = [
+        '/usr/local/bin/php',
+        '/usr/bin/php',
+        '/app/.heroku/php/bin/php'
+    ];
+
+    foreach ($paths as $p) {
+        if (is_executable($p)) {
+            return $p;
+        }
+    }
+
+    return null;
+}
+
+function pythonBinary(): ?string
+{
+    $out = [];
+
+    @exec('command -v python3 2>/dev/null', $out);
+
+    if (!empty($out[0])) {
+        return trim($out[0]);
+    }
+
+    $out = [];
+
+    @exec('command -v python 2>/dev/null', $out);
+
+    if (!empty($out[0])) {
+        return trim($out[0]);
+    }
+
+    return null;
+}
+
+/* ================= TOKEN DETECTION ================= */
+
+function detectToken(string $code): ?string
+{
+    $patterns = [
+        '/\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/',
+        '/["\'](\d{8,12}:[A-Za-z0-9_-]{30,})["\']/'
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $code, $m)) {
+            return $m[1] ?? $m[0];
+        }
+    }
+
+    return null;
+}
+
+function detectAdminId(string $code): ?string
+{
+    $patterns = [
+        '/(?:ADMIN_ID|ADMIN|OWNER_ID|OWNER)\s*[:=]\s*["\']?(\d{5,15})/i',
+        '/(?:admin_id|owner_id)\s*[\'"]?\s*=>\s*[\'"]?(\d{5,15})/i'
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $code, $m)) {
+            return $m[1];
+        }
+    }
+
+    return null;
+}
+
+function detectLanguage(string $filename): string
+{
+    $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+
+    return $ext === 'py' ? 'python' : 'php';
+}
+
+function verifyBotToken(string $token): ?array
+{
+    $url = 'https://api.telegram.org/bot' . $token . '/getMe';
+
+    $ch = curl_init($url);
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_SSL_VERIFYPEER => true
+    ]);
+
+    $response = curl_exec($ch);
+
+    curl_close($ch);
+
+    if (!$response) {
+        return null;
+    }
+
+    $json = json_decode($response, true);
+
+    if (!is_array($json) || empty($json['ok'])) {
+        return null;
+    }
+
+    return $json['result'] ?? null;
+}
+
+/* ================= DEPLOY LIMIT ================= */
+
+function deploymentAllowed(): bool
+{
+    global $DEPLOY_FILE;
+
+    $today = date('Y-m-d');
+
+    $data = [];
+
+    if (file_exists($DEPLOY_FILE)) {
+        $json = json_decode(
+            @file_get_contents($DEPLOY_FILE),
+            true
+        );
+
+        if (is_array($json)) {
+            $data = $json;
+        }
+    }
+
+    if (($data['date'] ?? '') !== $today) {
+        $data = [
+            'date' => $today,
+            'count' => 0
+        ];
+    }
+
+    return intval($data['count'] ?? 0) < DAILY_DEPLOY_LIMIT;
+}
+
+function countDeployment(): void
+{
+    global $DEPLOY_FILE;
+
+    $today = date('Y-m-d');
+
+    $data = [];
+
+    if (file_exists($DEPLOY_FILE)) {
+        $json = json_decode(
+            @file_get_contents($DEPLOY_FILE),
+            true
+        );
+
+        if (is_array($json)) {
+            $data = $json;
+        }
+    }
+
+    if (($data['date'] ?? '') !== $today) {
+        $data = [
+            'date' => $today,
+            'count' => 0
+        ];
+    }
+
+    $data['count'] = intval($data['count']) + 1;
+
+    @file_put_contents(
+        $DEPLOY_FILE,
+        json_encode($data, JSON_PRETTY_PRINT)
     );
 }
 
+/* ================= WEBHOOK ================= */
 
-function adminOnly($id): bool
+function setBotWebhook(string $token, string $url): array
 {
-    return (string)$id === ADMIN_ID;
+    $endpoint =
+        'https://api.telegram.org/bot' .
+        $token .
+        '/setWebhook';
+
+    $ch = curl_init($endpoint);
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => [
+            'url' => $url,
+            'drop_pending_updates' => 'true'
+        ],
+        CURLOPT_TIMEOUT => 20
+    ]);
+
+    $response = curl_exec($ch);
+
+    curl_close($ch);
+
+    $json = json_decode((string)$response, true);
+
+    return is_array($json)
+        ? $json
+        : [
+            'ok' => false,
+            'description' => 'Webhook response invalid'
+        ];
 }
 
-
-function botId(): string
+function deleteBotWebhook(string $token): void
 {
-    return 'bot_' .
-        date('Ymd_His') .
-        '_' .
-        bin2hex(random_bytes(4));
+    @tgBot($token, 'deleteWebhook');
 }
 
-
-/*
-========================================================
- TELEGRAM API
-========================================================
-*/
-
-function tg(string $method, array $data = []): array
+function tgBot(string $token, string $method, array $params = []): array
 {
     $url =
         'https://api.telegram.org/bot' .
-        BOT_TOKEN .
+        $token .
         '/' .
         $method;
 
@@ -122,218 +457,41 @@ function tg(string $method, array $data = []): array
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $data,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT => 60,
-    ]);
-
-    $result = curl_exec($ch);
-
-    curl_close($ch);
-
-    $json = json_decode(
-        $result ?: '',
-        true
-    );
-
-    return is_array($json)
-        ? $json
-        : [
-            'ok' => false,
-            'description' => 'Telegram API error'
-        ];
-}
-
-
-function sendText(
-    $chatId,
-    string $text,
-    ?array $keyboard = null
-): void {
-
-    $data = [
-        'chat_id' => $chatId,
-        'text' => $text,
-        'parse_mode' => 'HTML',
-        'disable_web_page_preview' => true
-    ];
-
-    if ($keyboard !== null) {
-        $data['reply_markup'] =
-            json_encode($keyboard);
-    }
-
-    tg('sendMessage', $data);
-}
-
-
-function editText(
-    $chatId,
-    $messageId,
-    string $text,
-    ?array $keyboard = null
-): void {
-
-    $data = [
-        'chat_id' => $chatId,
-        'message_id' => $messageId,
-        'text' => $text,
-        'parse_mode' => 'HTML',
-        'disable_web_page_preview' => true
-    ];
-
-    if ($keyboard !== null) {
-        $data['reply_markup'] =
-            json_encode($keyboard);
-    }
-
-    tg('editMessageText', $data);
-}
-
-
-function answerCallback(
-    string $id,
-    string $text = ''
-): void {
-
-    tg(
-        'answerCallbackQuery',
-        [
-            'callback_query_id' => $id,
-            'text' => $text
-        ]
-    );
-}
-
-
-/*
-========================================================
- VERIFY TELEGRAM BOT
-========================================================
-*/
-
-function verifyBot(string $token): array
-{
-    $url =
-        'https://api.telegram.org/bot' .
-        $token .
-        '/getMe';
-
-    $ch = curl_init($url);
-
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_POSTFIELDS => $params,
         CURLOPT_TIMEOUT => 20
     ]);
 
-    $result = curl_exec($ch);
-
-    $http = curl_getinfo(
-        $ch,
-        CURLINFO_HTTP_CODE
-    );
+    $response = curl_exec($ch);
 
     curl_close($ch);
 
-    $json = json_decode(
-        $result ?: '',
-        true
-    );
+    $json = json_decode((string)$response, true);
 
-    if (
-        $http !== 200 ||
-        !is_array($json) ||
-        !($json['ok'] ?? false)
-    ) {
-        return [
-            'ok' => false
-        ];
-    }
-
-    return [
-        'ok' => true,
-        'id' => $json['result']['id'] ?? '',
-        'username' =>
-            $json['result']['username'] ?? '',
-        'name' =>
-            $json['result']['first_name'] ?? ''
-    ];
+    return is_array($json)
+        ? $json
+        : ['ok' => false];
 }
 
+/* ================= MANAGER WEBHOOK ================= */
 
-/*
-========================================================
- TOKEN DETECTION
-========================================================
-*/
-
-function detectToken(string $source): ?string
+function ensureManagerWebhook(): void
 {
-    if (
-        preg_match(
-            '/\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/',
-            $source,
-            $match
-        )
-    ) {
-        return $match[0];
+    global $WEBHOOK_MARKER;
+
+    $old = '';
+
+    if (file_exists($WEBHOOK_MARKER)) {
+        $old = trim((string)@file_get_contents($WEBHOOK_MARKER));
     }
 
-    return null;
-}
-
-
-/*
-========================================================
- ADMIN ID DETECTION
-========================================================
-*/
-
-function detectAdminId(string $source): string
-{
-    $patterns = [
-        '/(?:ADMIN_ID|OWNER_ID)\s*=\s*[\'"]?(\d{5,15})/i',
-        '/(?:ADMINID|OWNERID)\s*=\s*[\'"]?(\d{5,15})/i'
-    ];
-
-    foreach ($patterns as $pattern) {
-
-        if (
-            preg_match(
-                $pattern,
-                $source,
-                $match
-            )
-        ) {
-            return $match[1];
-        }
+    if ($old === managerWebhookUrl()) {
+        return;
     }
-
-    return ADMIN_ID;
-}
-
-
-/*
-========================================================
- WEBHOOK
-========================================================
-*/
-
-function setBotWebhook(
-    string $token,
-    string $id
-): array {
 
     $url =
         'https://api.telegram.org/bot' .
-        $token .
+        MANAGER_BOT_TOKEN .
         '/setWebhook';
-
-    $webhook =
-        BASE_URL .
-        '/b/' .
-        $id;
 
     $ch = curl_init($url);
 
@@ -341,399 +499,1873 @@ function setBotWebhook(
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => [
-            'url' => $webhook,
-            'drop_pending_updates' => 'false'
+            'url' => managerWebhookUrl(),
+            'drop_pending_updates' => 'true'
         ],
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT => 30
+        CURLOPT_TIMEOUT => 15
     ]);
 
-    $result = curl_exec($ch);
+    @curl_exec($ch);
 
     curl_close($ch);
 
-    $json = json_decode(
-        $result ?: '',
-        true
+    @file_put_contents(
+        $WEBHOOK_MARKER,
+        managerWebhookUrl()
     );
-
-    return is_array($json)
-        ? $json
-        : ['ok' => false];
 }
 
+/* ================= BOT DIRECTORY ================= */
 
-function setManagerWebhook(): array
+function createBotDirectory(string $id): string
 {
-    return tg(
-        'setWebhook',
-        [
-            'url' =>
-                BASE_URL .
-                '/telegram',
+    global $BOTS;
 
-            'drop_pending_updates' =>
-                'false',
+    $dir = $BOTS . '/' . $id;
 
-            'allowed_updates' =>
-                json_encode([
-                    'message',
-                    'callback_query'
-                ])
-        ]
-    );
+    @mkdir($dir, 0777, true);
+
+    return $dir;
 }
 
+/* ================= PHP ROUTER ================= */
+
+function createPhpRouter(
+    string $dir,
+    string $botFile
+): string {
+    $router = $dir . '/__router.php';
+
+    $target = basename($botFile);
+
+    $code = <<<'PHP'
+<?php
 
 /*
-========================================================
- PROCESS
-========================================================
-*/
+ * Internal webhook router.
+ * Loads the uploaded Telegram bot on every HTTP request.
+ */
 
-function alive(int $pid): bool
-{
-    if ($pid <= 0) {
-        return false;
-    }
+$botFile = __DIR__ . '/__BOT_FILE__';
 
-    return file_exists(
-        '/proc/' . $pid
+if (file_exists($botFile)) {
+    require $botFile;
+} else {
+    http_response_code(404);
+    echo "BOT FILE NOT FOUND";
+}
+PHP;
+
+    $code = str_replace(
+        '__BOT_FILE__',
+        addslashes($target),
+        $code
     );
+
+    @file_put_contents($router, $code);
+
+    return $router;
 }
 
+/* ================= START BOT ================= */
 
-/*
-========================================================
- START PHP BOT
-========================================================
-*/
+function sourceLooksPolling(string $code): bool
+{
+    return
+        stripos($code, 'getUpdates') !== false ||
+        stripos($code, 'getupdates') !== false;
+}
 
 function startPhpBot(array &$bot): array
 {
-    $dir =
-        BOTS_DIR .
-        '/' .
-        $bot['id'];
+    $dir = $bot['dir'];
+    $file = $bot['file'];
 
-    $file =
-        $dir .
-        '/' .
-        $bot['filename'];
+    $php = phpBinary();
 
-    if (!file_exists($file)) {
+    if (!$php) {
         return [
             'ok' => false,
-            'error' => 'Bot file not found'
+            'error' => 'PHP runtime not found'
         ];
     }
 
-    $port =
-        (int)(
-            $bot['port']
-            ??
-            random_int(12000, 50000)
-        );
+    $port = intval($bot['port']);
+
+    if ($port < 10000) {
+        $port = 20000 + random_int(1, 20000);
+    }
 
     $bot['port'] = $port;
 
-    $log =
-        $dir .
-        '/bot.log';
+    $router = createPhpRouter($dir, $file);
+
+    $log = $dir . '/runtime.log';
 
     $cmd =
-        'cd ' .
-        escapeshellarg($dir) .
-        ' && ' .
-        'export BOT_TOKEN=' .
-        escapeshellarg($bot['token']) .
-        ' && ' .
-        'export ADMIN_ID=' .
-        escapeshellarg($bot['admin_id']) .
-        ' && ' .
-        'export PORT=' .
-        $port .
-        ' && ' .
-        'export WEBHOOK_URL=' .
-        escapeshellarg(
-            BASE_URL .
-            '/b/' .
-            $bot['id']
-        ) .
-        ' && nohup php -S 127.0.0.1:' .
-        $port .
-        ' -t ' .
-        escapeshellarg($dir) .
-        ' > ' .
+        escapeshellarg($php) .
+        ' -S 127.0.0.1:' .
+        intval($port) .
+        ' ' .
+        escapeshellarg($router) .
+        ' >> ' .
         escapeshellarg($log) .
         ' 2>&1 & echo $!';
 
     $output = [];
 
-    exec(
-        $cmd,
-        $output
-    );
+    @exec($cmd, $output);
 
-    $pid =
-        (int)(
-            $output[0]
-            ??
-            0
-        );
+    $pid = intval($output[0] ?? 0);
 
-    if ($pid <= 0) {
+    if ($pid < 1) {
         return [
             'ok' => false,
-            'error' => 'PHP process could not start'
+            'error' => 'Unable to start PHP process'
         ];
     }
 
     $bot['pid'] = $pid;
-    $bot['status'] = 'RUNNING';
-
-    file_put_contents(
-        $dir . '/bot.pid',
-        (string)$pid,
-        LOCK_EX
-    );
-
-    sleep(1);
-
-    if (!alive($pid)) {
-
-        $logText =
-            file_exists($log)
-            ? file_get_contents($log)
-            : 'No log available';
-
-        return [
-            'ok' => false,
-            'error' => substr(
-                $logText,
-                -2500
-            )
-        ];
-    }
+    $bot['status'] = 'running';
+    $bot['started_at'] = date('c');
 
     return [
-        'ok' => true
+        'ok' => true,
+        'pid' => $pid,
+        'port' => $port
     ];
 }
 
+function startPollingBot(array &$bot): array
+{
+    $dir = $bot['dir'];
+    $file = $bot['file'];
 
-/*
-========================================================
- START PYTHON BOT
-========================================================
-*/
+    $php = phpBinary();
+
+    if (!$php) {
+        return [
+            'ok' => false,
+            'error' => 'PHP runtime not found'
+        ];
+    }
+
+    $log = $dir . '/runtime.log';
+
+    $cmd =
+        escapeshellarg($php) .
+        ' ' .
+        escapeshellarg($file) .
+        ' >> ' .
+        escapeshellarg($log) .
+        ' 2>&1 & echo $!';
+
+    $output = [];
+
+    @exec($cmd, $output);
+
+    $pid = intval($output[0] ?? 0);
+
+    if ($pid < 1) {
+        return [
+            'ok' => false,
+            'error' => 'Unable to start polling bot'
+        ];
+    }
+
+    $bot['pid'] = $pid;
+    $bot['status'] = 'running';
+    $bot['mode'] = 'polling';
+    $bot['started_at'] = date('c');
+
+    return [
+        'ok' => true,
+        'pid' => $pid
+    ];
+}
 
 function startPythonBot(array &$bot): array
 {
-    $dir =
-        BOTS_DIR .
-        '/' .
-        $bot['id'];
+    $python = pythonBinary();
 
-    $file =
-        $dir .
-        '/' .
-        $bot['filename'];
-
-    if (!file_exists($file)) {
+    if (!$python) {
         return [
             'ok' => false,
-            'error' => 'Python file not found'
+            'error' =>
+                'Python runtime is not available in this Railway PHP environment'
         ];
     }
 
-    $port =
-        (int)(
-            $bot['port']
-            ??
-            random_int(12000, 50000)
-        );
+    $log = $bot['dir'] . '/runtime.log';
+
+    $port = intval($bot['port']);
+
+    if ($port < 10000) {
+        $port = 30000 + random_int(1, 15000);
+    }
 
     $bot['port'] = $port;
 
-    $log =
-        $dir .
-        '/bot.log';
-
     $cmd =
-        'cd ' .
-        escapeshellarg($dir) .
-        ' && ' .
-        'export BOT_TOKEN=' .
+        'PORT=' . intval($port) .
+        ' BOT_TOKEN=' .
         escapeshellarg($bot['token']) .
-        ' && ' .
-        'export ADMIN_ID=' .
-        escapeshellarg($bot['admin_id']) .
-        ' && ' .
-        'export PORT=' .
-        $port .
-        ' && ' .
-        'export WEBHOOK_URL=' .
-        escapeshellarg(
-            BASE_URL .
-            '/b/' .
-            $bot['id']
-        ) .
-        ' && nohup python3 ' .
-        escapeshellarg($file) .
-        ' > ' .
+        ' WEBHOOK_URL=' .
+        escapeshellarg(botWebhookUrl($bot['id'])) .
+        ' ' .
+        escapeshellarg($python) .
+        ' ' .
+        escapeshellarg($bot['file']) .
+        ' >> ' .
         escapeshellarg($log) .
         ' 2>&1 & echo $!';
 
     $output = [];
 
-    exec(
-        $cmd,
-        $output
-    );
+    @exec($cmd, $output);
 
-    $pid =
-        (int)(
-            $output[0]
-            ??
-            0
-        );
+    $pid = intval($output[0] ?? 0);
 
-    if ($pid <= 0) {
+    if ($pid < 1) {
         return [
             'ok' => false,
-            'error' =>
-                'Python process could not start. Railway PHP runtime may not have python3.'
+            'error' => 'Unable to start Python bot'
         ];
     }
 
     $bot['pid'] = $pid;
-    $bot['status'] = 'RUNNING';
+    $bot['status'] = 'running';
+    $bot['mode'] = 'python-http';
+    $bot['started_at'] = date('c');
 
-    file_put_contents(
-        $dir . '/bot.pid',
-        (string)$pid,
-        LOCK_EX
+    return [
+        'ok' => true,
+        'pid' => $pid,
+        'port' => $port
+    ];
+}
+
+function stopBot(array &$bot): void
+{
+    stopProcess(
+        intval($bot['pid'] ?? 0)
     );
 
-    sleep(1);
+    $bot['status'] = 'stopped';
+    $bot['pid'] = 0;
+    $bot['stopped_at'] = date('c');
+}
 
-    if (!alive($pid)) {
+/* ================= ZIP ================= */
 
-        $logText =
-            file_exists($log)
-            ? file_get_contents($log)
-            : 'No log available';
+function zipConfig(): array
+{
+    global $ZIP_CONFIG;
+
+    $json = @json_decode(
+        (string)@file_get_contents($ZIP_CONFIG),
+        true
+    );
+
+    if (!is_array($json)) {
+        return [
+            'mode' => '100',
+            'mb' => 100
+        ];
+    }
+
+    return $json;
+}
+
+function setZipConfig(string $mode): array
+{
+    global $ZIP_CONFIG;
+
+    if (strtolower($mode) === 'full') {
+        $data = [
+            'mode' => 'full',
+            'mb' => 0
+        ];
+    } else {
+        $mb = intval($mode);
+
+        if ($mb < 1) {
+            $mb = 100;
+        }
+
+        $data = [
+            'mode' => (string)$mb,
+            'mb' => $mb
+        ];
+    }
+
+    @file_put_contents(
+        $ZIP_CONFIG,
+        json_encode($data, JSON_PRETTY_PRINT)
+    );
+
+    return $data;
+}
+
+function extractZipFile(
+    string $zipFile,
+    string $destination
+): array {
+    @mkdir($destination, 0777, true);
+
+    /*
+     * First try PHP ZipArchive.
+     */
+
+    if (class_exists('ZipArchive')) {
+
+        $zip = new ZipArchive();
+
+        if ($zip->open($zipFile) === true) {
+
+            $count = $zip->numFiles;
+
+            $ok = $zip->extractTo($destination);
+
+            $zip->close();
+
+            if ($ok) {
+
+                return [
+                    'ok' => true,
+                    'method' => 'ZipArchive',
+                    'files' => $count
+                ];
+            }
+        }
+    }
+
+    /*
+     * Fallback to system unzip.
+     */
+
+    $out = [];
+
+    @exec(
+        'unzip -oq ' .
+        escapeshellarg($zipFile) .
+        ' -d ' .
+        escapeshellarg($destination) .
+        ' 2>&1',
+        $out,
+        $code
+    );
+
+    if ($code === 0) {
+
+        $files = 0;
+
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(
+                $destination,
+                FilesystemIterator::SKIP_DOTS
+            )
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isFile()) {
+                $files++;
+            }
+        }
 
         return [
-            'ok' => false,
-            'error' => substr(
-                $logText,
-                -2500
-            )
+            'ok' => true,
+            'method' => 'unzip',
+            'files' => $files
         ];
     }
 
     return [
-        'ok' => true
+        'ok' => false,
+        'error' =>
+            'ZIP extractor unavailable. ZipArchive/unzip not found.'
     ];
 }
 
+/* ================= LOG ================= */
 
-/*
-========================================================
- START
-========================================================
-*/
-
-function startBot(array &$bot): array
+function readLog(string $file, int $lines = 40): string
 {
-    if (
-        alive(
-            (int)(
-                $bot['pid']
-                ??
-                0
-            )
-        )
-    ) {
-        $bot['status'] = 'RUNNING';
-
-        return [
-            'ok' => true
-        ];
+    if (!file_exists($file)) {
+        return 'No logs available.';
     }
 
-    if (
-        strtoupper(
-            $bot['language']
-        ) === 'PHP'
-    ) {
-        return startPhpBot($bot);
+    $content = @file_get_contents($file);
+
+    if (!$content) {
+        return 'Log is empty.';
     }
 
-    return startPythonBot($bot);
+    $arr = preg_split('/\R/', $content);
+
+    $arr = array_slice(
+        $arr,
+        -$lines
+    );
+
+    return implode("\n", $arr);
 }
 
+/* ================= WEBHOOK PROXY ================= */
 
-/*
-========================================================
- STOP
-========================================================
-*/
-
-function stopBot(array &$bot): void
+function proxyBotRequest(string $id): void
 {
-    $pid =
-        (int)(
-            $bot['pid']
-            ??
-            0
-        );
+    $db = db();
 
-    if (alive($pid)) {
+    if (!isset($db[$id])) {
+        http_response_code(404);
+        echo 'BOT NOT FOUND';
+        exit;
+    }
 
-        @exec(
-            'kill ' .
-            escapeshellarg(
-                (string)$pid
+    $bot = $db[$id];
+
+    if (($bot['status'] ?? '') !== 'running') {
+        http_response_code(503);
+        echo 'BOT STOPPED';
+        exit;
+    }
+
+    $port = intval($bot['port'] ?? 0);
+
+    if ($port < 1) {
+        http_response_code(503);
+        echo 'BOT PORT NOT AVAILABLE';
+        exit;
+    }
+
+    $body = file_get_contents('php://input');
+
+    $target =
+        'http://127.0.0.1:' .
+        $port .
+        '/';
+
+    $ch = curl_init($target);
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $body,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Content-Length: ' . strlen($body)
+        ],
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT => 25
+    ]);
+
+    $response = curl_exec($ch);
+
+    $httpCode = intval(
+        curl_getinfo(
+            $ch,
+            CURLINFO_HTTP_CODE
+        )
+    );
+
+    curl_close($ch);
+
+    if ($response === false) {
+        http_response_code(502);
+        echo 'BOT PROCESS UNAVAILABLE';
+        exit;
+    }
+
+    http_response_code(
+        $httpCode > 0 ? $httpCode : 200
+    );
+
+    echo $response;
+    exit;
+}
+
+/* ================= DASHBOARD ================= */
+
+function dashboardText(): string
+{
+    $db = db();
+
+    $total = count($db);
+
+    $running = 0;
+    $stopped = 0;
+
+    foreach ($db as $bot) {
+
+        if (
+            ($bot['status'] ?? '') === 'running' &&
+            pidRunning(
+                intval($bot['pid'] ?? 0)
             )
-        );
-
-        usleep(500000);
-
-        if (alive($pid)) {
-            @exec(
-                'kill -9 ' .
-                escapeshellarg(
-                    (string)$pid
-                )
-            );
+        ) {
+            $running++;
+        } else {
+            $stopped++;
         }
     }
 
-    $bot['pid'] = 0;
-    $bot['status'] = 'STOPPED';
+    return
+        "🤖 <b>VICKY BOT HOSTING</b>\n\n" .
+        "📦 Total Bots: <b>{$total}</b>\n" .
+        "🟢 Running: <b>{$running}</b>\n" .
+        "🔴 Stopped: <b>{$stopped}</b>\n" .
+        "🚀 Daily Limit: <b>" .
+        DAILY_DEPLOY_LIMIT .
+        "</b>\n\n" .
+        "🌐 Railway Domain:\n" .
+        "<code>" .
+        htmlspecialchars(baseUrl()) .
+        "</code>\n\n" .
+        "⚡ Auto Verify + Auto Deploy enabled.";
 }
 
+function mainKeyboard(): array
+{
+    return [
+        'inline_keyboard' => [
+            [
+                [
+                    'text' => '📊 Dashboard',
+                    'callback_data' => 'dashboard'
+                ]
+            ],
+            [
+                [
+                    'text' => '🤖 My Bots',
+                    'callback_data' => 'bots'
+                ]
+            ],
+            [
+                [
+                    'text' => '📦 ZIP Extractor',
+                    'callback_data' => 'zipinfo'
+                ]
+            ],
+            [
+                [
+                    'text' => '⚙️ System Health',
+                    'callback_data' => 'health'
+                ]
+            ]
+        ]
+    ];
+}
 
-/*
-========================================================
- DELETE DIRECTORY
-========================================================
-*/
+/* ================= BOT LIST ================= */
 
-function removeDir(string $dir): void
+function botKeyboard(string $id): array
+{
+    return [
+        'inline_keyboard' => [
+            [
+                [
+                    'text' => '▶️ START',
+                    'callback_data' => 'start:' . $id
+                ],
+                [
+                    'text' => '⏹ STOP',
+                    'callback_data' => 'stop:' . $id
+                ]
+            ],
+            [
+                [
+                    'text' => '🔄 RESTART',
+                    'callback_data' => 'restart:' . $id
+                ],
+                [
+                    'text' => '📜 LOGS',
+                    'callback_data' => 'logs:' . $id
+                ]
+            ],
+            [
+                [
+                    'text' => 'ℹ️ INFO',
+                    'callback_data' => 'info:' . $id
+                ]
+            ],
+            [
+                [
+                    'text' => '🗑 DELETE',
+                    'callback_data' => 'delete:' . $id
+                ]
+            ]
+        ]
+    ];
+}
+
+function botsListText(): string
+{
+    $db = db();
+
+    if (!$db) {
+        return "🤖 <b>My Bots</b>\n\nNo bots deployed yet.";
+    }
+
+    $text = "🤖 <b>MY BOTS</b>\n\n";
+
+    foreach ($db as $id => $bot) {
+
+        $running =
+            ($bot['status'] ?? '') === 'running' &&
+            pidRunning(
+                intval($bot['pid'] ?? 0)
+            );
+
+        $status = $running
+            ? '🟢 RUNNING'
+            : '🔴 STOPPED';
+
+        $name =
+            $bot['username'] ??
+            $bot['first_name'] ??
+            'Unknown Bot';
+
+        $text .=
+            "• <b>" .
+            htmlspecialchars($name) .
+            "</b>\n" .
+            "ID: <code>" .
+            htmlspecialchars($id) .
+            "</code>\n" .
+            "Status: {$status}\n\n";
+    }
+
+    return $text;
+}
+
+/* ================= TELEGRAM UPDATE ================= */
+
+function handleTelegramUpdate(array $update): void
+{
+    if (isset($update['callback_query'])) {
+
+        $cb = $update['callback_query'];
+
+        $from = $cb['from']['id'] ?? 0;
+
+        if (!isAdmin($from)) {
+            answerCb(
+                $cb['id'],
+                '❌ Admin only'
+            );
+            return;
+        }
+
+        $data = $cb['data'] ?? '';
+
+        answerCb($cb['id']);
+
+        handleCallback(
+            $from,
+            intval(
+                $cb['message']['message_id'] ?? 0
+            ),
+            $data
+        );
+
+        return;
+    }
+
+    if (!isset($update['message'])) {
+        return;
+    }
+
+    $message = $update['message'];
+
+    $chat = $message['chat']['id'] ?? 0;
+    $from = $message['from']['id'] ?? 0;
+
+    if (!isAdmin($from)) {
+        sendMsg(
+            $chat,
+            "❌ <b>Access Denied</b>"
+        );
+        return;
+    }
+
+    /*
+     * ZIP batch configuration.
+     */
+
+    $text = trim(
+        $message['text'] ?? ''
+    );
+
+    if (
+        preg_match(
+            '/^\/zip\s+(100|full)$/i',
+            $text,
+            $m
+        )
+    ) {
+
+        $config = setZipConfig(
+            strtolower($m[1]) === 'full'
+                ? 'full'
+                : $m[1]
+        );
+
+        sendMsg(
+            $chat,
+            "📦 ZIP mode updated\n\n" .
+            "Mode: <b>" .
+            htmlspecialchars(
+                $config['mode']
+            ) .
+            "</b>"
+        );
+
+        return;
+    }
+
+    if ($text === '/start' || $text === '/menu') {
+
+        sendMsg(
+            $chat,
+            dashboardText(),
+            mainKeyboard()
+        );
+
+        return;
+    }
+
+    if ($text === '/health') {
+
+        sendMsg(
+            $chat,
+            healthText()
+        );
+
+        return;
+    }
+
+    /*
+     * DOCUMENT UPLOAD
+     */
+
+    if (isset($message['document'])) {
+
+        $doc = $message['document'];
+
+        $filename =
+            $doc['file_name'] ??
+            'upload';
+
+        $ext =
+            strtolower(
+                pathinfo(
+                    $filename,
+                    PATHINFO_EXTENSION
+                )
+            );
+
+        /*
+         * ZIP
+         */
+
+        if ($ext === 'zip') {
+
+            handleZipUpload(
+                $chat,
+                $doc
+            );
+
+            return;
+        }
+
+        /*
+         * PHP / PYTHON
+         */
+
+        if (!in_array(
+            $ext,
+            ['php', 'py'],
+            true
+        )) {
+
+            sendMsg(
+                $chat,
+                "❌ Only <b>.php</b>, <b>.py</b> and <b>.zip</b> files are supported."
+            );
+
+            return;
+        }
+
+        deployUploadedBot(
+            $chat,
+            $doc
+        );
+
+        return;
+    }
+
+    sendMsg(
+        $chat,
+        dashboardText(),
+        mainKeyboard()
+    );
+}
+
+/* ================= FILE DOWNLOAD ================= */
+
+function downloadTelegramFile(
+    string $fileId,
+    string $destination
+): bool {
+
+    $result = tg(
+        'getFile',
+        [
+            'file_id' => $fileId
+        ]
+    );
+
+    if (
+        empty($result['ok']) ||
+        empty(
+            $result['result']['file_path']
+        )
+    ) {
+        return false;
+    }
+
+    $path =
+        $result['result']['file_path'];
+
+    $url =
+        'https://api.telegram.org/file/bot' .
+        MANAGER_BOT_TOKEN .
+        '/' .
+        $path;
+
+    $data = @file_get_contents($url);
+
+    if ($data === false) {
+        return false;
+    }
+
+    return
+        @file_put_contents(
+            $destination,
+            $data
+        ) !== false;
+}
+
+/* ================= DEPLOY ================= */
+
+function deployUploadedBot(
+    int|string $chat,
+    array $doc
+): void {
+
+    if (!deploymentAllowed()) {
+
+        sendMsg(
+            $chat,
+            "❌ <b>Daily deployment limit reached.</b>\n\n" .
+            "Limit: " .
+            DAILY_DEPLOY_LIMIT .
+            " deployments/day."
+        );
+
+        return;
+    }
+
+    $filename =
+        $doc['file_name'] ??
+        'bot.php';
+
+    $ext =
+        strtolower(
+            pathinfo(
+                $filename,
+                PATHINFO_EXTENSION
+            )
+        );
+
+    $temp =
+        sys_get_temp_dir() .
+        '/bot_' .
+        bin2hex(random_bytes(6)) .
+        '.' .
+        $ext;
+
+    sendMsg(
+        $chat,
+        "⏳ <b>Uploading & analyzing bot...</b>"
+    );
+
+    if (!downloadTelegramFile(
+        $doc['file_id'],
+        $temp
+    )) {
+
+        sendMsg(
+            $chat,
+            "❌ Telegram file download failed.\n\n" .
+            "Bot API file-download size limits may apply."
+        );
+
+        return;
+    }
+
+    $code =
+        @file_get_contents($temp);
+
+    if (!$code) {
+
+        @unlink($temp);
+
+        sendMsg(
+            $chat,
+            "❌ Could not read uploaded file."
+        );
+
+        return;
+    }
+
+    $token =
+        detectToken($code);
+
+    if (!$token) {
+
+        @unlink($temp);
+
+        sendMsg(
+            $chat,
+            "❌ <b>Bot token not detected.</b>\n\n" .
+            "Upload a Telegram bot source containing the bot token."
+        );
+
+        return;
+    }
+
+    sendMsg(
+        $chat,
+        "🔎 Token detected.\n\n" .
+        "🔐 Verifying with Telegram..."
+    );
+
+    $me =
+        verifyBotToken($token);
+
+    if (!$me) {
+
+        @unlink($temp);
+
+        sendMsg(
+            $chat,
+            "❌ <b>BOT TOKEN INVALID</b>\n\n" .
+            "Telegram getMe verification failed."
+        );
+
+        return;
+    }
+
+    $botId =
+        'bot_' .
+        date('Ymd_His') .
+        '_' .
+        substr(
+            bin2hex(
+                random_bytes(5)
+            ),
+            0,
+            8
+        );
+
+    $dir =
+        createBotDirectory(
+            $botId
+        );
+
+    $safeFilename =
+        preg_replace(
+            '/[^a-zA-Z0-9._-]/',
+            '_',
+            $filename
+        );
+
+    $botFile =
+        $dir .
+        '/' .
+        $safeFilename;
+
+    @rename(
+        $temp,
+        $botFile
+    );
+
+    if (!file_exists($botFile)) {
+
+        @copy(
+            $temp,
+            $botFile
+        );
+    }
+
+    $adminId =
+        detectAdminId($code);
+
+    $db = db();
+
+    $bot = [
+        'id' => $botId,
+        'username' =>
+            isset($me['username'])
+                ? '@' . $me['username']
+                : '',
+        'first_name' =>
+            $me['first_name'] ?? '',
+        'telegram_id' =>
+            (string)(
+                $me['id'] ?? ''
+            ),
+        'admin_id' =>
+            $adminId,
+        'token' =>
+            $token,
+        'token_masked' =>
+            substr($token, 0, 8) .
+            '••••••••',
+        'language' =>
+            $ext === 'py'
+                ? 'Python'
+                : 'PHP',
+        'file' =>
+            $botFile,
+        'dir' =>
+            $dir,
+        'status' =>
+            'stopped',
+        'pid' =>
+            0,
+        'port' =>
+            20000 +
+            random_int(
+                1,
+                10000
+            ),
+        'created_at' =>
+            date('c')
+    ];
+
+    $polling =
+        sourceLooksPolling(
+            $code
+        );
+
+    $bot['mode'] =
+        $polling
+            ? 'polling'
+            : 'webhook';
+
+    /*
+     * Save first.
+     */
+
+    $db[$botId] = $bot;
+
+    saveDb($db);
+
+    /*
+     * Start process.
+     */
+
+    $result = [];
+
+    if ($ext === 'php') {
+
+        if ($polling) {
+
+            $result =
+                startPollingBot(
+                    $bot
+                );
+
+        } else {
+
+            $result =
+                startPhpBot(
+                    $bot
+                );
+        }
+
+    } else {
+
+        $result =
+            startPythonBot(
+                $bot
+            );
+    }
+
+    if (empty($result['ok'])) {
+
+        $bot['status'] = 'error';
+        $bot['error'] =
+            $result['error'] ??
+            'Unknown start error';
+
+        $db[$botId] = $bot;
+
+        saveDb($db);
+
+        sendMsg(
+            $chat,
+            "❌ <b>BOT START FAILED</b>\n\n" .
+            htmlspecialchars(
+                $bot['error']
+            ) .
+            "\n\n" .
+            "Bot: " .
+            htmlspecialchars(
+                $bot['username']
+            )
+        );
+
+        return;
+    }
+
+    /*
+     * Webhook only for webhook mode.
+     */
+
+    $webhookResult = [
+        'ok' => true
+    ];
+
+    if (!$polling) {
+
+        $webhookResult =
+            setBotWebhook(
+                $token,
+                botWebhookUrl(
+                    $botId
+                )
+            );
+
+        if (empty(
+            $webhookResult['ok']
+        )) {
+
+            stopBot($bot);
+
+            $bot['status'] =
+                'webhook_error';
+
+            $bot['error'] =
+                $webhookResult[
+                    'description'
+                ] ??
+                'Webhook failed';
+
+            $db[$botId] = $bot;
+
+            saveDb($db);
+
+            sendMsg(
+                $chat,
+                "❌ <b>Webhook setup failed</b>\n\n" .
+                htmlspecialchars(
+                    $bot['error']
+                )
+            );
+
+            return;
+        }
+    }
+
+    /*
+     * Save updated runtime.
+     */
+
+    $db[$botId] = $bot;
+
+    saveDb($db);
+
+    countDeployment();
+
+    $username =
+        $bot['username'] ?: 'Unknown';
+
+    $webhook =
+        !$polling
+            ? botWebhookUrl($botId)
+            : 'Polling mode';
+
+    $adminStatus =
+        $adminId
+            ? (
+                (string)$adminId === MANAGER_ADMIN_ID
+                    ? "✅ Manager admin ID"
+                    : "Detected: " . $adminId
+              )
+            : "Not detected";
+
+    sendMsg(
+        $chat,
+        "🎉 <b>BOT HOSTED SUCCESSFULLY</b>\n\n" .
+
+        "🤖 Bot: <b>" .
+        htmlspecialchars(
+            $username
+        ) .
+        "</b>\n" .
+
+        "🆔 Bot ID: <code>" .
+        htmlspecialchars(
+            (string)$me['id']
+        ) .
+        "</code>\n" .
+
+        "👤 Admin ID: <code>" .
+        htmlspecialchars(
+            $adminStatus
+        ) .
+        "</code>\n" .
+
+        "💻 Runtime: <b>" .
+        htmlspecialchars(
+            $bot['language']
+        ) .
+        "</b>\n" .
+
+        "⚙️ Mode: <b>" .
+        htmlspecialchars(
+            $bot['mode']
+        ) .
+        "</b>\n" .
+
+        "🟢 Status: <b>RUNNING</b>\n\n" .
+
+        "🌐 Railway Domain:\n" .
+        "<code>" .
+        htmlspecialchars(
+            baseUrl()
+        ) .
+        "</code>\n\n" .
+
+        "🔗 Webhook:\n" .
+        "<code>" .
+        htmlspecialchars(
+            $webhook
+        ) .
+        "</code>\n\n" .
+
+        "🔐 Token:\n" .
+        "<code>" .
+        htmlspecialchars(
+            $bot['token_masked']
+        ) .
+        "</code>",
+        botKeyboard($botId)
+    );
+}
+
+/* ================= ZIP UPLOAD ================= */
+
+function handleZipUpload(
+    int|string $chat,
+    array $doc
+): void {
+
+    global $ZIPS;
+
+    $config =
+        zipConfig();
+
+    $name =
+        $doc['file_name'] ??
+        'upload.zip';
+
+    $zipPath =
+        $ZIPS .
+        '/' .
+        date('Ymd_His') .
+        '_' .
+        preg_replace(
+            '/[^a-zA-Z0-9._-]/',
+            '_',
+            $name
+        );
+
+    sendMsg(
+        $chat,
+        "📦 <b>ZIP received</b>\n\n" .
+        "Mode: <b>" .
+        htmlspecialchars(
+            $config['mode']
+        ) .
+        "</b>\n\n" .
+        "⏳ Downloading..."
+    );
+
+    if (!downloadTelegramFile(
+        $doc['file_id'],
+        $zipPath
+    )) {
+
+        sendMsg(
+            $chat,
+            "❌ ZIP download failed.\n\n" .
+            "Telegram Bot API has file-download limits."
+        );
+
+        return;
+    }
+
+    $extractDir =
+        $ZIPS .
+        '/extract_' .
+        date('Ymd_His') .
+        '_' .
+        bin2hex(
+            random_bytes(3)
+        );
+
+    sendMsg(
+        $chat,
+        "📦 ZIP downloaded.\n\n" .
+        "⏳ Extracting files..."
+    );
+
+    $result =
+        extractZipFile(
+            $zipPath,
+            $extractDir
+        );
+
+    if (empty($result['ok'])) {
+
+        sendMsg(
+            $chat,
+            "❌ <b>Extraction failed</b>\n\n" .
+            htmlspecialchars(
+                $result['error'] ??
+                'Unknown error'
+            )
+        );
+
+        return;
+    }
+
+    $php = 0;
+    $py = 0;
+    $other = 0;
+    $totalBytes = 0;
+
+    $iterator =
+        new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(
+                $extractDir,
+                FilesystemIterator::SKIP_DOTS
+            )
+        );
+
+    foreach ($iterator as $file) {
+
+        if (!$file->isFile()) {
+            continue;
+        }
+
+        $size =
+            $file->getSize();
+
+        $totalBytes += $size;
+
+        $ext =
+            strtolower(
+                $file->getExtension()
+            );
+
+        if ($ext === 'php') {
+            $php++;
+        } elseif ($ext === 'py') {
+            $py++;
+        } else {
+            $other++;
+        }
+    }
+
+    $mb =
+        round(
+            $totalBytes /
+            1024 /
+            1024,
+            2
+        );
+
+    sendMsg(
+        $chat,
+        "✅ <b>ZIP EXTRACTION COMPLETE</b>\n\n" .
+        "📁 Files: <b>" .
+        intval(
+            $result['files']
+        ) .
+        "</b>\n" .
+        "🐘 PHP: <b>{$php}</b>\n" .
+        "🐍 Python: <b>{$py}</b>\n" .
+        "📄 Other: <b>{$other}</b>\n" .
+        "💾 Size: <b>{$mb} MB</b>\n\n" .
+        "📦 Batch mode: <b>" .
+        htmlspecialchars(
+            $config['mode']
+        ) .
+        "</b>\n\n" .
+        "📍 Extracted to:\n" .
+        "<code>" .
+        htmlspecialchars(
+            $extractDir
+        ) .
+        "</code>"
+    );
+}
+
+/* ================= CALLBACKS ================= */
+
+function handleCallback(
+    int|string $chat,
+    int $messageId,
+    string $data
+): void {
+
+    if ($data === 'dashboard') {
+
+        editMsg(
+            $chat,
+            $messageId,
+            dashboardText(),
+            mainKeyboard()
+        );
+
+        return;
+    }
+
+    if ($data === 'bots') {
+
+        editMsg(
+            $chat,
+            $messageId,
+            botsListText(),
+            mainKeyboard()
+        );
+
+        return;
+    }
+
+    if ($data === 'zipinfo') {
+
+        $config =
+            zipConfig();
+
+        editMsg(
+            $chat,
+            $messageId,
+            "📦 <b>ZIP EXTRACTOR</b>\n\n" .
+            "Current mode: <b>" .
+            htmlspecialchars(
+                $config['mode']
+            ) .
+            "</b>\n\n" .
+            "Send:\n" .
+            "<code>/zip 100</code>\n" .
+            "or\n" .
+            "<code>/zip full</code>\n\n" .
+            "Then upload your ZIP.",
+            mainKeyboard()
+        );
+
+        return;
+    }
+
+    if ($data === 'health') {
+
+        editMsg(
+            $chat,
+            $messageId,
+            healthText(),
+            mainKeyboard()
+        );
+
+        return;
+    }
+
+    if (!str_contains($data, ':')) {
+        return;
+    }
+
+    [$action, $id] =
+        explode(
+            ':',
+            $data,
+            2
+        );
+
+    $db = db();
+
+    if (!isset($db[$id])) {
+
+        editMsg(
+            $chat,
+            $messageId,
+            "❌ Bot not found.",
+            mainKeyboard()
+        );
+
+        return;
+    }
+
+    $bot =
+        $db[$id];
+
+    if ($action === 'start') {
+
+        if (
+            ($bot['status'] ?? '') === 'running' &&
+            pidRunning(
+                intval($bot['pid'] ?? 0)
+            )
+        ) {
+
+            editMsg(
+                $chat,
+                $messageId,
+                "🟢 <b>Bot is already running.</b>",
+                botKeyboard($id)
+            );
+
+            return;
+        }
+
+        $code =
+            @file_get_contents(
+                $bot['file']
+            );
+
+        if (
+            $bot['language'] === 'PHP' &&
+            sourceLooksPolling(
+                (string)$code
+            )
+        ) {
+            $result =
+                startPollingBot(
+                    $bot
+                );
+
+            if (!empty($result['ok'])) {
+                tgBot(
+                    $bot['token'],
+                    'deleteWebhook'
+                );
+            }
+
+        } elseif (
+            $bot['language'] === 'PHP'
+        ) {
+
+            $result =
+                startPhpBot(
+                    $bot
+                );
+
+            if (!empty($result['ok'])) {
+                setBotWebhook(
+                    $bot['token'],
+                    botWebhookUrl($id)
+                );
+            }
+
+        } else {
+
+            $result =
+                startPythonBot(
+                    $bot
+                );
+
+            if (!empty($result['ok'])) {
+                setBotWebhook(
+                    $bot['token'],
+                    botWebhookUrl($id)
+                );
+            }
+        }
+
+        if (empty($result['ok'])) {
+
+            $bot['status'] = 'error';
+            $bot['error'] =
+                $result['error'] ??
+                'Start failed';
+
+        } else {
+
+            $bot['status'] = 'running';
+        }
+
+        $db[$id] = $bot;
+
+        saveDb($db);
+
+        editMsg(
+            $chat,
+            $messageId,
+            !empty($result['ok'])
+                ? "▶️ <b>Bot started successfully.</b>\n\n" .
+                  htmlspecialchars(
+                      $bot['username']
+                  )
+                : "❌ <b>Start failed</b>\n\n" .
+                  htmlspecialchars(
+                      $bot['error']
+                  ),
+            botKeyboard($id)
+        );
+
+        return;
+    }
+
+    if ($action === 'stop') {
+
+        stopBot($bot);
+
+        tgBot(
+            $bot['token'],
+            'deleteWebhook'
+        );
+
+        $db[$id] = $bot;
+
+        saveDb($db);
+
+        editMsg(
+            $chat,
+            $messageId,
+            "⏹ <b>Bot stopped.</b>",
+            botKeyboard($id)
+        );
+
+        return;
+    }
+
+    if ($action === 'restart') {
+
+        stopBot($bot);
+
+        sleep(1);
+
+        $code =
+            @file_get_contents(
+                $bot['file']
+            );
+
+        if (
+            $bot['language'] === 'PHP' &&
+            sourceLooksPolling(
+                (string)$code
+            )
+        ) {
+
+            $result =
+                startPollingBot(
+                    $bot
+                );
+
+            tgBot(
+                $bot['token'],
+                'deleteWebhook'
+            );
+
+        } elseif (
+            $bot['language'] === 'PHP'
+        ) {
+
+            $result =
+                startPhpBot(
+                    $bot
+                );
+
+            setBotWebhook(
+                $bot['token'],
+                botWebhookUrl($id)
+            );
+
+        } else {
+
+            $result =
+                startPythonBot(
+                    $bot
+                );
+
+            if (!empty($result['ok'])) {
+                setBotWebhook(
+                    $bot['token'],
+                    botWebhookUrl($id)
+                );
+            }
+        }
+
+        if (!empty($result['ok'])) {
+            $bot['status'] = 'running';
+        } else {
+            $bot['status'] = 'error';
+        }
+
+        $db[$id] = $bot;
+
+        saveDb($db);
+
+        editMsg(
+            $chat,
+            $messageId,
+            !empty($result['ok'])
+                ? "🔄 <b>Bot restarted successfully.</b>"
+                : "❌ <b>Restart failed.</b>",
+            botKeyboard($id)
+        );
+
+        return;
+    }
+
+    if ($action === 'logs') {
+
+        $log =
+            readLog(
+                $bot['dir'] .
+                '/runtime.log'
+            );
+
+        editMsg(
+            $chat,
+            $messageId,
+            "📜 <b>BOT LOGS</b>\n\n" .
+            "<pre>" .
+            htmlspecialchars(
+                $log
+            ) .
+            "</pre>",
+            botKeyboard($id)
+        );
+
+        return;
+    }
+
+    if ($action === 'info') {
+
+        $running =
+            pidRunning(
+                intval(
+                    $bot['pid'] ?? 0
+                )
+            );
+
+        editMsg(
+            $chat,
+            $messageId,
+            "🤖 <b>BOT INFORMATION</b>\n\n" .
+            "Name: <b>" .
+            htmlspecialchars(
+                $bot['username']
+            ) .
+            "</b>\n" .
+            "Bot ID: <code>" .
+            htmlspecialchars(
+                $id
+            ) .
+            "</code>\n" .
+            "Telegram ID: <code>" .
+            htmlspecialchars(
+                $bot['telegram_id']
+            ) .
+            "</code>\n" .
+            "Language: <b>" .
+            htmlspecialchars(
+                $bot['language']
+            ) .
+            "</b>\n" .
+            "Mode: <b>" .
+            htmlspecialchars(
+                $bot['mode']
+            ) .
+            "</b>\n" .
+            "Process: <b>" .
+            ($running
+                ? 'RUNNING'
+                : 'STOPPED') .
+            "</b>\n" .
+            "PID: <code>" .
+            intval(
+                $bot['pid']
+            ) .
+            "</code>\n" .
+            "Port: <code>" .
+            intval(
+                $bot['port']
+            ) .
+            "</code>\n\n" .
+            "Webhook:\n" .
+            "<code>" .
+            htmlspecialchars(
+                botWebhookUrl($id)
+            ) .
+            "</code>",
+            botKeyboard($id)
+        );
+
+        return;
+    }
+
+    if ($action === 'delete') {
+
+        stopBot($bot);
+
+        tgBot(
+            $bot['token'],
+            'deleteWebhook'
+        );
+
+        if (
+            isset($bot['dir']) &&
+            is_dir($bot['dir'])
+        ) {
+            deleteDirectory(
+                $bot['dir']
+            );
+        }
+
+        unset(
+            $db[$id]
+        );
+
+        saveDb($db);
+
+        editMsg(
+            $chat,
+            $messageId,
+            "🗑 <b>Bot deleted successfully.</b>",
+            mainKeyboard()
+        );
+
+        return;
+    }
+}
+
+/* ================= DELETE DIRECTORY ================= */
+
+function deleteDirectory(string $dir): void
 {
     if (!is_dir($dir)) {
         return;
     }
 
-    $items = scandir($dir);
-
-    if ($items === false) {
-        return;
-    }
+    $items =
+        scandir($dir);
 
     foreach ($items as $item) {
 
@@ -750,7 +2382,7 @@ function removeDir(string $dir): void
             $item;
 
         if (is_dir($path)) {
-            removeDir($path);
+            deleteDirectory($path);
         } else {
             @unlink($path);
         }
@@ -759,723 +2391,80 @@ function removeDir(string $dir): void
     @rmdir($dir);
 }
 
+/* ================= HEALTH ================= */
 
-/*
-========================================================
- BUTTONS
-========================================================
-*/
-
-function buttons(
-    string $id,
-    bool $running
-): array {
-
-    return [
-
-        'inline_keyboard' => [
-
-            [
-
-                [
-                    'text' =>
-                        $running
-                        ? '🛑 STOP'
-                        : '▶️ START',
-
-                    'callback_data' =>
-                        ($running
-                            ? 'stop:'
-                            : 'start:')
-                        .
-                        $id
-                ],
-
-                [
-                    'text' =>
-                        '🔄 RESTART',
-
-                    'callback_data' =>
-                        'restart:' .
-                        $id
-                ]
-
-            ],
-
-            [
-
-                [
-                    'text' =>
-                        '📋 LOGS',
-
-                    'callback_data' =>
-                        'logs:' .
-                        $id
-                ],
-
-                [
-                    'text' =>
-                        'ℹ️ INFO',
-
-                    'callback_data' =>
-                        'info:' .
-                        $id
-                ]
-
-            ],
-
-            [
-
-                [
-                    'text' =>
-                        '🗑 DELETE',
-
-                    'callback_data' =>
-                        'delete:' .
-                        $id
-                ]
-
-            ]
-
-        ]
-
-    ];
-}
-
-
-/*
-========================================================
- DASHBOARD
-========================================================
-*/
-
-function dashboard(): string
+function healthText(): string
 {
-    $bots =
-        loadBots();
+    $db = db();
 
-    $total = count($bots);
+    $php =
+        phpBinary()
+            ? '✅'
+            : '❌';
 
-    $running = 0;
+    $python =
+        pythonBinary()
+            ? '✅'
+            : '❌';
 
-    $stopped = 0;
+    $curl =
+        function_exists('curl_init')
+            ? '✅'
+            : '❌';
 
-    foreach ($bots as $bot) {
+    $zip =
+        class_exists('ZipArchive')
+            ? '✅'
+            : '⚠️';
 
-        if (
-            alive(
-                (int)(
-                    $bot['pid']
-                    ??
-                    0
-                )
-            )
-        ) {
-            $running++;
-        } else {
-            $stopped++;
-        }
-    }
+    $exec =
+        function_exists('exec')
+            ? '✅'
+            : '❌';
 
     return
-        "🚀 <b>VICKY BOT HOSTING</b>\n\n" .
-
-        "🤖 Total Bots: <b>" .
-        $total .
-        "</b>\n" .
-
-        "🟢 Running: <b>" .
-        $running .
-        "</b>\n" .
-
-        "🔴 Stopped: <b>" .
-        $stopped .
+        "⚙️ <b>SYSTEM HEALTH</b>\n\n" .
+        "PHP: {$php}\n" .
+        "Python: {$python}\n" .
+        "cURL: {$curl}\n" .
+        "ZipArchive: {$zip}\n" .
+        "Process Control: {$exec}\n\n" .
+        "Bots: <b>" .
+        count($db) .
         "</b>\n\n" .
-
-        "🌐 Railway Domain:\n" .
-        BASE_URL .
-        "\n\n" .
-
-        "📤 Upload a PHP/Python bot file to deploy it automatically.";
+        "🌐 Domain:\n" .
+        "<code>" .
+        htmlspecialchars(
+            baseUrl()
+        ) .
+        "</code>";
 }
 
+/* ================= ROUTING ================= */
 
 /*
-========================================================
- BOT INFO
-========================================================
-*/
+ * Health endpoint
+ */
 
-function botInfo(array $bot): string
-{
-    $running =
-        alive(
-            (int)(
-                $bot['pid']
-                ??
-                0
-            )
-        );
-
-    return
-        "🤖 <b>" .
-        h(
-            $bot['username']
-            ??
-            'Unknown'
-        ) .
-        "</b>\n\n" .
-
-        "Status: " .
-        (
-            $running
-            ? '🟢 RUNNING'
-            : '🔴 STOPPED'
-        ) .
-        "\n" .
-
-        "Language: <b>" .
-        h(
-            $bot['language']
-        ) .
-        "</b>\n" .
-
-        "Bot ID: <code>" .
-        h(
-            $bot['telegram_id']
-            ??
-            ''
-        ) .
-        "</code>\n" .
-
-        "Admin ID: <code>" .
-        h(
-            $bot['admin_id']
-            ??
-            ''
-        ) .
-        "</code>\n\n" .
-
-        "Webhook:\n" .
-        BASE_URL .
-        '/b/' .
-        $bot['id'];
-}
-
-
-/*
-========================================================
- HOSTED WEBHOOK PROXY
-========================================================
-*/
-
-function proxyBot(string $id): void
-{
-    $bots =
-        loadBots();
-
-    if (!isset($bots[$id])) {
-
-        http_response_code(404);
-
-        header(
-            'Content-Type: application/json'
-        );
-
-        echo json_encode([
-            'ok' => false,
-            'error' => 'Bot not found'
-        ]);
-
-        exit;
-    }
-
-    $bot =
-        $bots[$id];
-
-    $pid =
-        (int)(
-            $bot['pid']
-            ??
-            0
-        );
-
-    if (!alive($pid)) {
-
-        http_response_code(503);
-
-        header(
-            'Content-Type: application/json'
-        );
-
-        echo json_encode([
-            'ok' => false,
-            'error' => 'Bot is stopped'
-        ]);
-
-        exit;
-    }
-
-    $port =
-        (int)(
-            $bot['port']
-            ??
-            0
-        );
-
-    if ($port <= 0) {
-
-        http_response_code(503);
-
-        echo json_encode([
-            'ok' => false,
-            'error' => 'Invalid bot port'
-        ]);
-
-        exit;
-    }
-
-    $body =
-        file_get_contents(
-            'php://input'
-        );
-
-    $ch =
-        curl_init(
-            'http://127.0.0.1:' .
-            $port .
-            '/'
-        );
-
-    curl_setopt_array($ch, [
-
-        CURLOPT_RETURNTRANSFER => true,
-
-        CURLOPT_POST => true,
-
-        CURLOPT_POSTFIELDS => $body,
-
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json'
-        ],
-
-        CURLOPT_CONNECTTIMEOUT => 5,
-
-        CURLOPT_TIMEOUT => 30
-
-    ]);
-
-    $result =
-        curl_exec($ch);
-
-    $http =
-        curl_getinfo(
-            $ch,
-            CURLINFO_HTTP_CODE
-        );
-
-    curl_close($ch);
-
-    if ($result === false) {
-
-        http_response_code(502);
-
-        echo json_encode([
-            'ok' => false,
-            'error' =>
-                'Bot process unreachable'
-        ]);
-
-        exit;
-    }
-
-    http_response_code(
-        $http > 0
-        ? $http
-        : 200
-    );
+if (isset($_GET['health'])) {
 
     header(
-        'Content-Type: application/json'
+        'Content-Type: text/plain; charset=utf-8'
     );
 
-    echo $result;
+    echo healthText();
 
     exit;
 }
 
-
 /*
-========================================================
- CALLBACK HANDLER
-========================================================
-*/
-
-function handleCallback(
-    array $callback
-): void {
-
-    $userId =
-        $callback['from']['id']
-        ??
-        0;
-
-    if (!adminOnly($userId)) {
-
-        answerCallback(
-            $callback['id'],
-            'Admin only'
-        );
-
-        return;
-    }
-
-    $data =
-        $callback['data']
-        ??
-        '';
-
-    $parts =
-        explode(
-            ':',
-            $data,
-            2
-        );
-
-    if (count($parts) !== 2) {
-        return;
-    }
-
-    $action = $parts[0];
-
-    $id = $parts[1];
-
-    $bots =
-        loadBots();
-
-    if (!isset($bots[$id])) {
-
-        answerCallback(
-            $callback['id'],
-            'Bot not found'
-        );
-
-        return;
-    }
-
-    $bot =
-        &$bots[$id];
-
-    $chatId =
-        $callback['message']['chat']['id']
-        ??
-        0;
-
-    $messageId =
-        $callback['message']['message_id']
-        ??
-        0;
-
-
-    /*
-     * START
-     */
-
-    if ($action === 'start') {
-
-        $result =
-            startBot($bot);
-
-        if ($result['ok']) {
-
-            setBotWebhook(
-                $bot['token'],
-                $id
-            );
-
-            saveBots($bots);
-
-            answerCallback(
-                $callback['id'],
-                'Bot started'
-            );
-
-            editText(
-                $chatId,
-                $messageId,
-                botInfo($bot),
-                buttons(
-                    $id,
-                    true
-                )
-            );
-
-        } else {
-
-            answerCallback(
-                $callback['id'],
-                'Start failed'
-            );
-
-            sendText(
-                $chatId,
-
-                "❌ <b>START FAILED</b>\n\n" .
-                h(
-                    $result['error']
-                    ??
-                    'Unknown error'
-                )
-            );
-        }
-
-        return;
-    }
-
-
-    /*
-     * STOP
-     */
-
-    if ($action === 'stop') {
-
-        stopBot($bot);
-
-        saveBots($bots);
-
-        answerCallback(
-            $callback['id'],
-            'Bot stopped'
-        );
-
-        editText(
-            $chatId,
-            $messageId,
-            botInfo($bot),
-            buttons(
-                $id,
-                false
-            )
-        );
-
-        return;
-    }
-
-
-    /*
-     * RESTART
-     */
-
-    if ($action === 'restart') {
-
-        stopBot($bot);
-
-        usleep(500000);
-
-        $result =
-            startBot($bot);
-
-        if ($result['ok']) {
-
-            setBotWebhook(
-                $bot['token'],
-                $id
-            );
-        }
-
-        saveBots($bots);
-
-        answerCallback(
-            $callback['id'],
-            $result['ok']
-                ? 'Restarted'
-                : 'Restart failed'
-        );
-
-        editText(
-            $chatId,
-            $messageId,
-            botInfo($bot),
-            buttons(
-                $id,
-                $result['ok']
-            )
-        );
-
-        return;
-    }
-
-
-    /*
-     * INFO
-     */
-
-    if ($action === 'info') {
-
-        $running =
-            alive(
-                (int)(
-                    $bot['pid']
-                    ??
-                    0
-                )
-            );
-
-        answerCallback(
-            $callback['id']
-        );
-
-        sendText(
-            $chatId,
-            botInfo($bot),
-            buttons(
-                $id,
-                $running
-            )
-        );
-
-        return;
-    }
-
-
-    /*
-     * LOGS
-     */
-
-    if ($action === 'logs') {
-
-        $log =
-            BOTS_DIR .
-            '/' .
-            $id .
-            '/bot.log';
-
-        $text =
-            file_exists($log)
-            ? file_get_contents($log)
-            : 'No logs available.';
-
-        $text =
-            substr(
-                $text,
-                -3500
-            );
-
-        answerCallback(
-            $callback['id']
-        );
-
-        sendText(
-            $chatId,
-
-            "📋 <b>BOT LOGS</b>\n\n" .
-            "<pre>" .
-            h($text) .
-            "</pre>"
-        );
-
-        return;
-    }
-
-
-    /*
-     * DELETE
-     */
-
-    if ($action === 'delete') {
-
-        stopBot($bot);
-
-        removeDir(
-            BOTS_DIR .
-            '/' .
-            $id
-        );
-
-        unset(
-            $bots[$id]
-        );
-
-        saveBots($bots);
-
-        answerCallback(
-            $callback['id'],
-            'Bot deleted'
-        );
-
-        editText(
-            $chatId,
-            $messageId,
-            "🗑 <b>Bot deleted successfully.</b>"
-        );
-
-        return;
-    }
-}
-
-
-/*
-========================================================
- PROCESS INCOMING REQUEST
-========================================================
-*/
-
-$path =
-    parse_url(
-        $_SERVER['REQUEST_URI']
-        ??
-        '/',
-        PHP_URL_PATH
-    );
-
-
-/*
- Hosted bot webhook
+ * Manager webhook
  */
 
 if (
-    is_string($path) &&
-    preg_match(
-        '#^/b/([A-Za-z0-9_-]+)$#',
-        $path,
-        $match
-    )
+    isset($_GET['manager']) &&
+    $_GET['manager'] === '1'
 ) {
-
-    proxyBot(
-        $match[1]
-    );
-
-    exit;
-}
-
-
-/*
- Health
- */
-
-if ($path === '/health') {
-
-    header(
-        'Content-Type: application/json'
-    );
-
-    echo json_encode([
-        'ok' => true,
-        'service' => 'Vicky Bot Hosting',
-        'domain' => BASE_URL,
-        'time' => date('c')
-    ]);
-
-    exit;
-}
-
-
-/*
- Manager Telegram webhook
- */
-
-if ($path === '/telegram') {
 
     $raw =
         file_get_contents(
@@ -1484,595 +2473,299 @@ if ($path === '/telegram') {
 
     $update =
         json_decode(
-            $raw ?: '',
+            (string)$raw,
             true
         );
 
-    if (!is_array($update)) {
-        exit;
+    if (is_array($update)) {
+        handleTelegramUpdate(
+            $update
+        );
     }
 
-    if (
-        isset(
-            $update['callback_query']
+    http_response_code(200);
+    echo 'OK';
+
+    exit;
+}
+
+/*
+ * Hosted bot webhook
+ */
+
+if (
+    isset($_GET['bot']) &&
+    $_GET['bot'] !== ''
+) {
+
+    proxyBotRequest(
+        safeId(
+            (string)$_GET['bot']
         )
-    ) {
-
-        handleCallback(
-            $update['callback_query']
-        );
-
-        exit;
-    }
-
-    $message =
-        $update['message']
-        ??
-        null;
-
-    if (!$message) {
-        exit;
-    }
-
-    $chatId =
-        $message['chat']['id']
-        ??
-        0;
-
-    $userId =
-        $message['from']['id']
-        ??
-        0;
-
-    if (!adminOnly($userId)) {
-
-        sendText(
-            $chatId,
-            "⛔ <b>ACCESS DENIED</b>"
-        );
-
-        exit;
-    }
-
-
-    /*
-     * COMMAND
-     */
-
-    $text =
-        trim(
-            $message['text']
-            ??
-            ''
-        );
-
-
-    /*
-     * START
-     */
-
-    if (
-        $text === '/start' ||
-        $text === '/panel'
-    ) {
-
-        sendText(
-            $chatId,
-            dashboard(),
-            [
-                'inline_keyboard' => [
-                    [
-                        [
-                            'text' =>
-                                '🔄 REFRESH',
-                            'callback_data' =>
-                                'refresh:dashboard'
-                        ]
-                    ]
-                ]
-            ]
-        );
-
-        exit;
-    }
-
-
-    /*
-     * BOTS
-     */
-
-    if ($text === '/bots') {
-
-        $bots =
-            loadBots();
-
-        if (!$bots) {
-
-            sendText(
-                $chatId,
-                "🤖 <b>Total Bots: 0</b>"
-            );
-
-            exit;
-        }
-
-        foreach ($bots as $bot) {
-
-            $running =
-                alive(
-                    (int)(
-                        $bot['pid']
-                        ??
-                        0
-                    )
-                );
-
-            sendText(
-                $chatId,
-                botInfo($bot),
-                buttons(
-                    $bot['id'],
-                    $running
-                )
-            );
-        }
-
-        exit;
-    }
-
-
-    /*
-     * STATUS
-     */
-
-    if ($text === '/status') {
-
-        sendText(
-            $chatId,
-            dashboard()
-        );
-
-        exit;
-    }
-
-
-    /*
-     * FILE UPLOAD
-     */
-
-    if (
-        isset(
-            $message['document']
-        )
-    ) {
-
-        $document =
-            $message['document'];
-
-        $filename =
-            $document['file_name']
-            ??
-            '';
-
-        $extension =
-            strtolower(
-                pathinfo(
-                    $filename,
-                    PATHINFO_EXTENSION
-                )
-            );
-
-
-        if (
-            !in_array(
-                $extension,
-                ['php', 'py'],
-                true
-            )
-        ) {
-
-            sendText(
-                $chatId,
-
-                "❌ <b>Invalid file</b>\n\n" .
-                "Only <b>.php</b> and <b>.py</b> files are supported."
-            );
-
-            exit;
-        }
-
-
-        /*
-         * Telegram file info
-         */
-
-        $fileInfo =
-            tg(
-                'getFile',
-                [
-                    'file_id' =>
-                        $document['file_id']
-                ]
-            );
-
-
-        if (
-            !($fileInfo['ok'] ?? false)
-        ) {
-
-            sendText(
-                $chatId,
-                "❌ Telegram file download failed."
-            );
-
-            exit;
-        }
-
-
-        $filePath =
-            $fileInfo['result']['file_path']
-            ??
-            '';
-
-
-        $downloadUrl =
-            'https://api.telegram.org/file/bot' .
-            BOT_TOKEN .
-            '/' .
-            $filePath;
-
-
-        $source =
-            @file_get_contents(
-                $downloadUrl
-            );
-
-
-        if ($source === false) {
-
-            sendText(
-                $chatId,
-                "❌ Unable to download uploaded file."
-            );
-
-            exit;
-        }
-
-
-        /*
-         * TOKEN
-         */
-
-        $token =
-            detectToken($source);
-
-
-        if (!$token) {
-
-            sendText(
-                $chatId,
-
-                "❌ <b>BOT TOKEN NOT FOUND</b>\n\n" .
-                "File ke andar valid Telegram bot token hona chahiye."
-            );
-
-            exit;
-        }
-
-
-        /*
-         * VERIFY
-         */
-
-        $verified =
-            verifyBot($token);
-
-
-        if (
-            !($verified['ok'] ?? false)
-        ) {
-
-            sendText(
-                $chatId,
-
-                "❌ <b>BOT VERIFICATION FAILED</b>\n\n" .
-                "Detected Telegram token valid nahi hai."
-            );
-
-            exit;
-        }
-
-
-        /*
-         * CREATE BOT
-         */
-
-        $id =
-            botId();
-
-        $dir =
-            BOTS_DIR .
-            '/' .
-            $id;
-
-        @mkdir(
-            $dir,
-            0755,
-            true
-        );
-
-
-        $safeFilename =
-            basename($filename);
-
-
-        file_put_contents(
-            $dir .
-            '/' .
-            $safeFilename,
-            $source,
-            LOCK_EX
-        );
-
-
-        $adminId =
-            detectAdminId(
-                $source
-            );
-
-
-        $bots =
-            loadBots();
-
-
-        $bots[$id] = [
-
-            'id' =>
-                $id,
-
-            'filename' =>
-                $safeFilename,
-
-            'language' =>
-                strtoupper(
-                    $extension
-                ),
-
-            'token' =>
-                $token,
-
-            'admin_id' =>
-                $adminId,
-
-            'telegram_id' =>
-                $verified['id']
-                ??
-                '',
-
-            'username' =>
-                '@' .
-                (
-                    $verified['username']
-                    ??
-                    'unknown'
-                ),
-
-            'name' =>
-                $verified['name']
-                ??
-                '',
-
-            'pid' =>
-                0,
-
-            'port' =>
-                random_int(
-                    12000,
-                    50000
-                ),
-
-            'status' =>
-                'STARTING',
-
-            'created_at' =>
-                date('c')
-
-        ];
-
-
-        /*
-         * START IMMEDIATELY
-         */
-
-        $result =
-            startBot(
-                $bots[$id]
-            );
-
-
-        if (
-            !($result['ok'] ?? false)
-        ) {
-
-            $bots[$id]['status'] =
-                'ERROR';
-
-            $bots[$id]['error'] =
-                $result['error']
-                ??
-                'Unknown error';
-
-            saveBots($bots);
-
-            sendText(
-                $chatId,
-
-                "⚠️ <b>BOT VERIFIED</b>\n\n" .
-
-                "🤖 " .
-                h(
-                    $bots[$id]['username']
-                ) .
-                "\n\n" .
-
-                "❌ <b>START FAILED</b>\n\n" .
-
-                "<pre>" .
-                h(
-                    $bots[$id]['error']
-                ) .
-                "</pre>"
-            );
-
-            exit;
-        }
-
-
-        /*
-         * WEBHOOK
-         */
-
-        $webhook =
-            setBotWebhook(
-                $token,
-                $id
-            );
-
-
-        $bots[$id]['webhook'] =
-            BASE_URL .
-            '/b/' .
-            $id;
-
-        $bots[$id]['webhook_ok'] =
-            (bool)(
-                $webhook['ok']
-                ??
-                false
-            );
-
-        $bots[$id]['status'] =
-            'RUNNING';
-
-
-        saveBots($bots);
-
-
-        /*
-         * SUCCESS
-         */
-
-        sendText(
-            $chatId,
-
-            "🎉 <b>BOT HOSTED SUCCESSFULLY</b>\n\n" .
-
-            "🤖 Bot: <b>" .
-            h(
-                $bots[$id]['username']
-            ) .
-            "</b>\n" .
-
-            "🆔 Telegram ID: <code>" .
-            h(
-                $bots[$id]['telegram_id']
-            ) .
-            "</code>\n" .
-
-            "👤 Admin ID: <code>" .
-            h(
-                $bots[$id]['admin_id']
-            ) .
-            "</code>\n" .
-
-            "💻 Type: <b>" .
-            h($extension) .
-            "</b>\n" .
-
-            "🟢 Status: <b>RUNNING</b>\n\n" .
-
-            "🔗 Webhook:\n" .
-            BASE_URL .
-            '/b/' .
-            $id
-        );
-
-        exit;
-    }
-
-
-    /*
-     * DEFAULT
-     */
-
-    sendText(
-        $chatId,
-
-        "🚀 <b>VICKY BOT HOSTING</b>\n\n" .
-
-        "/start — Dashboard\n" .
-        "/bots — Hosted bots\n" .
-        "/status — Server status\n\n" .
-
-        "📤 PHP/Python Telegram bot file upload karo."
     );
 
     exit;
 }
 
-
 /*
-========================================================
- ROOT PAGE
-========================================================
-*/
+ * Root request.
+ *
+ * Also automatically attempts to configure
+ * the manager webhook.
+ */
+
+ensureManagerWebhook();
+
+/* ================= WEB DASHBOARD ================= */
 
 header(
     'Content-Type: text/html; charset=utf-8'
 );
 
-echo '<!doctype html>
+$db = db();
+
+$total = count($db);
+
+$running = 0;
+
+foreach ($db as $bot) {
+
+    if (
+        ($bot['status'] ?? '') === 'running' &&
+        pidRunning(
+            intval($bot['pid'] ?? 0)
+        )
+    ) {
+        $running++;
+    }
+}
+
+?>
+<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+
 <title>Vicky Bot Hosting</title>
+
 <style>
+
+*{
+    box-sizing:border-box;
+}
+
 body{
-    background:#07111f;
-    color:#fff;
-    font-family:Arial,sans-serif;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    min-height:100vh;
     margin:0;
+    min-height:100vh;
+    font-family:Arial,sans-serif;
+    background:
+        radial-gradient(
+            circle at top,
+            #12264c,
+            #050912 55%,
+            #02040a
+        );
+    color:#fff;
 }
+
+.wrap{
+    width:min(1100px,94%);
+    margin:40px auto;
+}
+
+.header{
+    padding:28px;
+    border:1px solid rgba(255,255,255,.1);
+    border-radius:24px;
+    background:rgba(255,255,255,.06);
+    backdrop-filter:blur(20px);
+}
+
+h1{
+    margin:0 0 8px;
+}
+
+.muted{
+    color:#9ba9c2;
+}
+
+.grid{
+    display:grid;
+    grid-template-columns:
+        repeat(auto-fit,minmax(200px,1fr));
+    gap:16px;
+    margin-top:20px;
+}
+
 .card{
-    padding:35px;
-    border:1px solid #24344a;
+    padding:22px;
     border-radius:20px;
-    background:#0d1928;
-    text-align:center;
-    max-width:500px;
+    background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.08);
 }
-.ok{
-    color:#45e68a;
-    font-size:20px;
+
+.number{
+    font-size:32px;
+    font-weight:800;
 }
-small{
-    color:#9aa8b8;
+
+.domain{
+    margin-top:20px;
+    padding:18px;
+    border-radius:16px;
+    background:#07111f;
+    word-break:break-all;
 }
+
+.bot{
+    margin-top:15px;
+    padding:18px;
+    border-radius:18px;
+    background:rgba(255,255,255,.05);
+}
+
+.green{
+    color:#4ade80;
+}
+
+.red{
+    color:#fb7185;
+}
+
+code{
+    color:#8ec5ff;
+}
+
 </style>
+
 </head>
+
 <body>
-<div class="card">
-<div class="ok">● ONLINE</div>
-<h1>VICKY BOT HOSTING</h1>
-<p>Telegram Bot Hosting Manager</p>
-<small>' .
-h(BASE_URL) .
-'</small>
+
+<div class="wrap">
+
+<div class="header">
+
+<h1>🤖 VICKY BOT HOSTING</h1>
+
+<div class="muted">
+Single Railway Bot Hosting Manager
 </div>
+
+<div class="grid">
+
+<div class="card">
+<div class="muted">Total Bots</div>
+<div class="number">
+<?=intval($total)?>
+</div>
+</div>
+
+<div class="card">
+<div class="muted">Running</div>
+<div class="number green">
+<?=intval($running)?>
+</div>
+</div>
+
+<div class="card">
+<div class="muted">Stopped</div>
+<div class="number red">
+<?=intval($total-$running)?>
+</div>
+</div>
+
+<div class="card">
+<div class="muted">Daily Deploy Limit</div>
+<div class="number">
+<?=DAILY_DEPLOY_LIMIT?>
+</div>
+</div>
+
+</div>
+
+<div class="domain">
+
+🌐 <b>Railway Domain</b><br><br>
+
+<code>
+<?=htmlspecialchars(baseUrl())?>
+</code>
+
+</div>
+
+</div>
+
+<?php foreach ($db as $id => $bot): ?>
+
+<div class="bot">
+
+<b>
+<?=htmlspecialchars(
+    $bot['username'] ??
+    'Unknown Bot'
+)?>
+</b>
+
+<br><br>
+
+ID:
+<code>
+<?=htmlspecialchars($id)?>
+</code>
+
+<br>
+
+Status:
+
+<?php
+
+$isRunning =
+    ($bot['status'] ?? '') === 'running' &&
+    pidRunning(
+        intval($bot['pid'] ?? 0)
+    );
+
+?>
+
+<?php if ($isRunning): ?>
+
+<span class="green">
+● RUNNING
+</span>
+
+<?php else: ?>
+
+<span class="red">
+● STOPPED
+</span>
+
+<?php endif; ?>
+
+<br><br>
+
+Webhook:
+
+<code>
+<?=htmlspecialchars(
+    botWebhookUrl($id)
+)?>
+</code>
+
+</div>
+
+<?php endforeach; ?>
+
+</div>
+
 </body>
-</html>';
+</html>
+
+<?php
+/*
+========================================================
+END
+========================================================
+*/
+?>
