@@ -1,154 +1,71 @@
 <?php
-
 declare(strict_types=1);
 
 /*
-============================================================
- VICKY BOT HOSTING MANAGER
-============================================================
-
-Existing Railway domain:
-
-https://bot-hosting-production-7668.up.railway.app
-
-Features:
-- Admin only
-- PHP / Python upload
-- Automatic token detection
-- Automatic Telegram getMe verification
-- Automatic start
-- Existing Railway service only
-- Per-bot localhost process
-- Webhook proxy
-- Total bots
-- Running / stopped
-- Start / stop / restart
-- Logs
-- Delete
-- Webhook health
-- 100 deployment actions/day
-
-============================================================
-CONFIG
-============================================================
+========================================================
+ VICKY BOT HOSTING
+ Single-file GitHub -> Railway version
+========================================================
 */
 
-const ADMIN_ID = '8897821078';
+const BOT_TOKEN = '7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nYqI';
+const ADMIN_ID  = '8897821078';
 
-const BASE_DOMAIN =
-    'https://bot-hosting-production-7668.up.railway.app';
+const BASE_URL  = 'https://bot-hosting-production-7668.up.railway.app';
+
+const STORAGE   = __DIR__ . '/storage';
+const BOTS_DIR  = __DIR__ . '/storage/bots';
+const DATA_FILE = __DIR__ . '/storage/bots.json';
 
 const DAILY_LIMIT = 100;
 
-const ROOT =
-    '/app/storage';
-
-const BOT_ROOT =
-    '/app/storage/hosted';
-
-const DATA_ROOT =
-    '/app/storage/data';
-
-const DB_FILE =
-    '/app/storage/data/bots.json';
-
-const USAGE_FILE =
-    '/app/storage/data/usage.json';
-
 
 /*
-============================================================
-MANAGER BOT TOKEN
-============================================================
-
-Railway Variables:
-
-MANAGER_BOT_TOKEN=YOUR_NEW_MANAGER_BOT_TOKEN
-
-Do NOT put the old exposed token here permanently.
-Rotate it with BotFather first.
-============================================================
+========================================================
+ INITIALIZE
+========================================================
 */
 
-$MANAGER_BOT_TOKEN =
-    getenv('7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nYqI') ?: '';
-
-
-/*
-============================================================
-CREATE DIRECTORIES
-============================================================
-*/
-
-foreach (
-    [
-        ROOT,
-        BOT_ROOT,
-        DATA_ROOT
-    ] as $directory
-) {
-
-    if (
-        !is_dir($directory)
-    ) {
-
-        @mkdir(
-            $directory,
-            0755,
-            true
-        );
-    }
+if (!is_dir(STORAGE)) {
+    @mkdir(STORAGE, 0755, true);
 }
 
+if (!is_dir(BOTS_DIR)) {
+    @mkdir(BOTS_DIR, 0755, true);
+}
 
-if (
-    !file_exists(DB_FILE)
-) {
-
-    file_put_contents(
-        DB_FILE,
-        '{}',
-        LOCK_EX
-    );
+if (!file_exists(DATA_FILE)) {
+    file_put_contents(DATA_FILE, '{}', LOCK_EX);
 }
 
 
 /*
-============================================================
-DATABASE
-============================================================
+========================================================
+ DATABASE
+========================================================
 */
 
-function db(): array
+function loadBots(): array
 {
-    $data =
-        @file_get_contents(
-            DB_FILE
-        );
+    $raw = @file_get_contents(DATA_FILE);
 
-    $json =
-        json_decode(
-            $data ?: '{}',
-            true
-        );
+    if (!$raw) {
+        return [];
+    }
 
-    return
-        is_array($json)
-        ? $json
-        : [];
+    $data = json_decode($raw, true);
+
+    return is_array($data) ? $data : [];
 }
 
 
-function saveDb(
-    array $data
-): void {
-
+function saveBots(array $bots): void
+{
     file_put_contents(
-        DB_FILE,
+        DATA_FILE,
         json_encode(
-            $data,
-            JSON_PRETTY_PRINT |
-            JSON_UNESCAPED_SLASHES
+            $bots,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
         ),
         LOCK_EX
     );
@@ -156,1269 +73,637 @@ function saveDb(
 
 
 /*
-============================================================
-HTML ESCAPE
-============================================================
+========================================================
+ HELPERS
+========================================================
 */
 
-function h(
-    $value
-): string {
-
+function h($value): string
+{
     return htmlspecialchars(
         (string)$value,
-        ENT_QUOTES |
-        ENT_SUBSTITUTE,
+        ENT_QUOTES | ENT_SUBSTITUTE,
         'UTF-8'
     );
 }
 
 
-/*
-============================================================
-TELEGRAM API
-============================================================
-*/
-
-function telegram(
-    string $method,
-    array $params = []
-): array {
-
-    global $MANAGER_BOT_TOKEN;
+function adminOnly($id): bool
+{
+    return (string)$id === ADMIN_ID;
+}
 
 
-    if (
-        $MANAGER_BOT_TOKEN === ''
-    ) {
-
-        return [
-            'ok' => false,
-            'description' =>
-                'MANAGER_BOT_TOKEN is missing'
-        ];
-    }
-
-
-    $url =
-        'https://api.telegram.org/bot'
-        .
-        $MANAGER_BOT_TOKEN
-        .
-        '/'
-        .
-        $method;
-
-
-    $ch =
-        curl_init($url);
-
-
-    curl_setopt_array(
-        $ch,
-        [
-            CURLOPT_RETURNTRANSFER =>
-                true,
-
-            CURLOPT_POST =>
-                true,
-
-            CURLOPT_POSTFIELDS =>
-                $params,
-
-            CURLOPT_CONNECTTIMEOUT =>
-                10,
-
-            CURLOPT_TIMEOUT =>
-                60
-        ]
-    );
-
-
-    $response =
-        curl_exec($ch);
-
-
-    curl_close($ch);
-
-
-    $json =
-        json_decode(
-            $response ?: '',
-            true
-        );
-
-
-    return
-        is_array($json)
-        ? $json
-        : [
-            'ok' => false,
-            'description' =>
-                'Invalid Telegram response'
-        ];
+function botId(): string
+{
+    return 'bot_' .
+        date('Ymd_His') .
+        '_' .
+        bin2hex(random_bytes(4));
 }
 
 
 /*
-============================================================
-SEND MESSAGE
-============================================================
+========================================================
+ TELEGRAM API
+========================================================
 */
 
-function sendMessage(
+function tg(string $method, array $data = []): array
+{
+    $url =
+        'https://api.telegram.org/bot' .
+        BOT_TOKEN .
+        '/' .
+        $method;
+
+    $ch = curl_init($url);
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $data,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 60,
+    ]);
+
+    $result = curl_exec($ch);
+
+    curl_close($ch);
+
+    $json = json_decode(
+        $result ?: '',
+        true
+    );
+
+    return is_array($json)
+        ? $json
+        : [
+            'ok' => false,
+            'description' => 'Telegram API error'
+        ];
+}
+
+
+function sendText(
     $chatId,
     string $text,
     ?array $keyboard = null
 ): void {
 
-    $params = [
-
-        'chat_id' =>
-            $chatId,
-
-        'text' =>
-            $text,
-
-        'parse_mode' =>
-            'HTML',
-
-        'disable_web_page_preview' =>
-            true
+    $data = [
+        'chat_id' => $chatId,
+        'text' => $text,
+        'parse_mode' => 'HTML',
+        'disable_web_page_preview' => true
     ];
 
-
-    if (
-        $keyboard !== null
-    ) {
-
-        $params['reply_markup'] =
-            json_encode(
-                $keyboard
-            );
+    if ($keyboard !== null) {
+        $data['reply_markup'] =
+            json_encode($keyboard);
     }
 
-
-    telegram(
-        'sendMessage',
-        $params
-    );
+    tg('sendMessage', $data);
 }
 
 
-/*
-============================================================
-EDIT MESSAGE
-============================================================
-*/
-
-function editMessage(
+function editText(
     $chatId,
     $messageId,
     string $text,
     ?array $keyboard = null
 ): void {
 
-    $params = [
-
-        'chat_id' =>
-            $chatId,
-
-        'message_id' =>
-            $messageId,
-
-        'text' =>
-            $text,
-
-        'parse_mode' =>
-            'HTML',
-
-        'disable_web_page_preview' =>
-            true
+    $data = [
+        'chat_id' => $chatId,
+        'message_id' => $messageId,
+        'text' => $text,
+        'parse_mode' => 'HTML',
+        'disable_web_page_preview' => true
     ];
 
-
-    if (
-        $keyboard !== null
-    ) {
-
-        $params['reply_markup'] =
-            json_encode(
-                $keyboard
-            );
+    if ($keyboard !== null) {
+        $data['reply_markup'] =
+            json_encode($keyboard);
     }
 
-
-    telegram(
-        'editMessageText',
-        $params
-    );
+    tg('editMessageText', $data);
 }
 
-
-/*
-============================================================
-CALLBACK ANSWER
-============================================================
-*/
 
 function answerCallback(
     string $id,
     string $text = ''
 ): void {
 
-    telegram(
+    tg(
         'answerCallbackQuery',
         [
-            'callback_query_id' =>
-                $id,
-
-            'text' =>
-                $text
+            'callback_query_id' => $id,
+            'text' => $text
         ]
     );
 }
 
 
 /*
-============================================================
-ADMIN CHECK
-============================================================
+========================================================
+ VERIFY TELEGRAM BOT
+========================================================
 */
 
-function isAdmin(
-    $id
-): bool {
-
-    return
-        (string)$id ===
-        ADMIN_ID;
-}
-
-
-/*
-============================================================
-ID
-============================================================
-*/
-
-function createBotId(): string
+function verifyBot(string $token): array
 {
-    return
-        'bot_' .
-        date('Ymd_His') .
-        '_' .
-        bin2hex(
-            random_bytes(5)
-        );
-}
-
-
-/*
-============================================================
-PORT
-============================================================
-*/
-
-function createPort(): int
-{
-    return random_int(
-        12000,
-        50000
-    );
-}
-
-
-/*
-============================================================
-PROCESS CHECK
-============================================================
-*/
-
-function processRunning(
-    int $pid
-): bool {
-
-    return
-        $pid > 0 &&
-        file_exists(
-            "/proc/$pid"
-        );
-}
-
-
-/*
-============================================================
-TOKEN DETECTION
-============================================================
-*/
-
-function detectToken(
-    string $source
-): ?string {
-
-    $patterns = [
-
-        '/\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/',
-
-        '/(?:BOT_TOKEN|TELEGRAM_BOT_TOKEN|TOKEN)'
-        . '\s*=\s*[\'"]'
-        . '(\d{8,12}:[A-Za-z0-9_-]{30,})'
-        . '[\'"]/i'
-
-    ];
-
-
-    foreach (
-        $patterns as $pattern
-    ) {
-
-        if (
-            preg_match(
-                $pattern,
-                $source,
-                $match
-            )
-        ) {
-
-            if (
-                isset($match[1])
-            ) {
-
-                return $match[1];
-            }
-
-
-            return $match[0];
-        }
-    }
-
-
-    return null;
-}
-
-
-/*
-============================================================
-ADMIN ID DETECTION
-============================================================
-*/
-
-function detectAdminId(
-    string $source
-): ?string {
-
-    $patterns = [
-
-        '/(?:ADMIN_ID|OWNER_ID)'
-        . '\s*=\s*[\'"]?'
-        . '(\d{5,15})/i',
-
-        '/(?:ADMINID|OWNERID)'
-        . '\s*=\s*[\'"]?'
-        . '(\d{5,15})/i'
-
-    ];
-
-
-    foreach (
-        $patterns as $pattern
-    ) {
-
-        if (
-            preg_match(
-                $pattern,
-                $source,
-                $match
-            )
-        ) {
-
-            return $match[1];
-        }
-    }
-
-
-    return null;
-}
-
-
-/*
-============================================================
-VERIFY TELEGRAM BOT
-============================================================
-*/
-
-function verifyBot(
-    string $token
-): array {
-
     $url =
-        'https://api.telegram.org/bot'
-        .
-        $token
-        .
+        'https://api.telegram.org/bot' .
+        $token .
         '/getMe';
 
+    $ch = curl_init($url);
 
-    $ch =
-        curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 20
+    ]);
 
+    $result = curl_exec($ch);
 
-    curl_setopt_array(
+    $http = curl_getinfo(
         $ch,
-        [
-            CURLOPT_RETURNTRANSFER =>
-                true,
-
-            CURLOPT_CONNECTTIMEOUT =>
-                10,
-
-            CURLOPT_TIMEOUT =>
-                20
-        ]
+        CURLINFO_HTTP_CODE
     );
-
-
-    $response =
-        curl_exec($ch);
-
-
-    $http =
-        curl_getinfo(
-            $ch,
-            CURLINFO_HTTP_CODE
-        );
-
 
     curl_close($ch);
 
-
-    $json =
-        json_decode(
-            $response ?: '',
-            true
-        );
-
+    $json = json_decode(
+        $result ?: '',
+        true
+    );
 
     if (
         $http !== 200 ||
         !is_array($json) ||
         !($json['ok'] ?? false)
     ) {
-
         return [
-            'ok' => false,
-            'http' => $http
-        ];
-    }
-
-
-    return [
-
-        'ok' => true,
-
-        'id' =>
-            $json['result']['id']
-            ?? '',
-
-        'username' =>
-            $json['result']['username']
-            ?? '',
-
-        'first_name' =>
-            $json['result']['first_name']
-            ?? ''
-
-    ];
-}
-
-
-/*
-============================================================
-WEBHOOK SET
-============================================================
-*/
-
-function setWebhook(
-    string $token,
-    string $botId
-): array {
-
-    $webhookUrl =
-        BASE_DOMAIN .
-        '/b/' .
-        $botId;
-
-
-    $url =
-        'https://api.telegram.org/bot'
-        .
-        $token
-        .
-        '/setWebhook';
-
-
-    $ch =
-        curl_init($url);
-
-
-    curl_setopt_array(
-        $ch,
-        [
-
-            CURLOPT_RETURNTRANSFER =>
-                true,
-
-            CURLOPT_POST =>
-                true,
-
-            CURLOPT_POSTFIELDS => [
-
-                'url' =>
-                    $webhookUrl,
-
-                'drop_pending_updates' =>
-                    'false',
-
-                'allowed_updates' =>
-                    json_encode([
-                        'message',
-                        'edited_message',
-                        'callback_query',
-                        'inline_query',
-                        'chat_member',
-                        'my_chat_member'
-                    ])
-
-            ],
-
-            CURLOPT_CONNECTTIMEOUT =>
-                10,
-
-            CURLOPT_TIMEOUT =>
-                30
-
-        ]
-    );
-
-
-    $response =
-        curl_exec($ch);
-
-
-    curl_close($ch);
-
-
-    $json =
-        json_decode(
-            $response ?: '',
-            true
-        );
-
-
-    return
-        is_array($json)
-        ? $json
-        : [
             'ok' => false
         ];
+    }
+
+    return [
+        'ok' => true,
+        'id' => $json['result']['id'] ?? '',
+        'username' =>
+            $json['result']['username'] ?? '',
+        'name' =>
+            $json['result']['first_name'] ?? ''
+    ];
 }
 
 
 /*
-============================================================
-WEBHOOK INFO
-============================================================
+========================================================
+ TOKEN DETECTION
+========================================================
 */
 
-function getWebhookInfo(
-    string $token
+function detectToken(string $source): ?string
+{
+    if (
+        preg_match(
+            '/\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/',
+            $source,
+            $match
+        )
+    ) {
+        return $match[0];
+    }
+
+    return null;
+}
+
+
+/*
+========================================================
+ ADMIN ID DETECTION
+========================================================
+*/
+
+function detectAdminId(string $source): string
+{
+    $patterns = [
+        '/(?:ADMIN_ID|OWNER_ID)\s*=\s*[\'"]?(\d{5,15})/i',
+        '/(?:ADMINID|OWNERID)\s*=\s*[\'"]?(\d{5,15})/i'
+    ];
+
+    foreach ($patterns as $pattern) {
+
+        if (
+            preg_match(
+                $pattern,
+                $source,
+                $match
+            )
+        ) {
+            return $match[1];
+        }
+    }
+
+    return ADMIN_ID;
+}
+
+
+/*
+========================================================
+ WEBHOOK
+========================================================
+*/
+
+function setBotWebhook(
+    string $token,
+    string $id
 ): array {
 
     $url =
-        'https://api.telegram.org/bot'
-        .
-        $token
-        .
-        '/getWebhookInfo';
+        'https://api.telegram.org/bot' .
+        $token .
+        '/setWebhook';
 
+    $webhook =
+        BASE_URL .
+        '/b/' .
+        $id;
 
-    $ch =
-        curl_init($url);
+    $ch = curl_init($url);
 
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => [
+            'url' => $webhook,
+            'drop_pending_updates' => 'false'
+        ],
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30
+    ]);
 
-    curl_setopt_array(
-        $ch,
-        [
-            CURLOPT_RETURNTRANSFER =>
-                true,
-
-            CURLOPT_CONNECTTIMEOUT =>
-                10,
-
-            CURLOPT_TIMEOUT =>
-                20
-        ]
-    );
-
-
-    $response =
-        curl_exec($ch);
-
+    $result = curl_exec($ch);
 
     curl_close($ch);
 
+    $json = json_decode(
+        $result ?: '',
+        true
+    );
 
-    $json =
-        json_decode(
-            $response ?: '',
-            true
-        );
-
-
-    return
-        is_array($json)
+    return is_array($json)
         ? $json
-        : [];
+        : ['ok' => false];
 }
 
 
-/*
-============================================================
-USAGE
-============================================================
-*/
-
-function usage(): array
+function setManagerWebhook(): array
 {
-    $today =
-        date('Y-m-d');
+    return tg(
+        'setWebhook',
+        [
+            'url' =>
+                BASE_URL .
+                '/telegram',
 
+            'drop_pending_updates' =>
+                'false',
 
-    if (
-        !file_exists(
-            USAGE_FILE
-        )
-    ) {
-
-        $data = [
-
-            'date' =>
-                $today,
-
-            'count' =>
-                0
-
-        ];
-
-
-        file_put_contents(
-            USAGE_FILE,
-            json_encode($data),
-            LOCK_EX
-        );
-
-
-        return $data;
-    }
-
-
-    $data =
-        json_decode(
-            file_get_contents(
-                USAGE_FILE
-            ),
-            true
-        );
-
-
-    if (
-        !is_array($data) ||
-        ($data['date'] ?? '')
-        !==
-        $today
-    ) {
-
-        $data = [
-
-            'date' =>
-                $today,
-
-            'count' =>
-                0
-
-        ];
-    }
-
-
-    return $data;
-}
-
-
-function increaseUsage(): void
-{
-    $data =
-        usage();
-
-
-    $data['count'] =
-        (int)$data['count'] + 1;
-
-
-    file_put_contents(
-        USAGE_FILE,
-        json_encode($data),
-        LOCK_EX
+            'allowed_updates' =>
+                json_encode([
+                    'message',
+                    'callback_query'
+                ])
+        ]
     );
 }
 
 
 /*
-============================================================
-START PHP BOT
-============================================================
+========================================================
+ PROCESS
+========================================================
 */
 
-function startPHPBot(
-    array &$bot
-): array {
+function alive(int $pid): bool
+{
+    if ($pid <= 0) {
+        return false;
+    }
 
+    return file_exists(
+        '/proc/' . $pid
+    );
+}
+
+
+/*
+========================================================
+ START PHP BOT
+========================================================
+*/
+
+function startPhpBot(array &$bot): array
+{
     $dir =
-        BOT_ROOT .
+        BOTS_DIR .
         '/' .
         $bot['id'];
-
 
     $file =
         $dir .
         '/' .
         $bot['filename'];
 
-
-    if (
-        !file_exists($file)
-    ) {
-
+    if (!file_exists($file)) {
         return [
             'ok' => false,
-            'error' =>
-                'Bot file not found'
+            'error' => 'Bot file not found'
         ];
     }
 
+    $port =
+        (int)(
+            $bot['port']
+            ??
+            random_int(12000, 50000)
+        );
+
+    $bot['port'] = $port;
 
     $log =
         $dir .
         '/bot.log';
 
-
-    $pidFile =
-        $dir .
-        '/bot.pid';
-
-
-    $port =
-        (int)(
-            $bot['port']
-            ?? 0
-        );
-
-
-    if (
-        $port <= 0
-    ) {
-
-        $port =
-            createPort();
-
-
-        $bot['port'] =
-            $port;
-    }
-
-
-    /*
-     * Create index wrapper.
-     */
-
-    if (
-        basename($file)
-        !==
-        'index.php'
-    ) {
-
-        file_put_contents(
-
-            $dir .
-            '/index.php',
-
-            "<?php\n"
-            .
-            "require __DIR__ . '/"
-            .
-            basename($file)
-            .
-            "';\n"
-        );
-    }
-
-
-    $webhook =
-        BASE_DOMAIN .
-        '/b/' .
-        $bot['id'];
-
-
     $cmd =
         'cd ' .
-        escapeshellarg($dir)
-        .
-        ' && '
-        .
-        'export BOT_TOKEN='
-        .
+        escapeshellarg($dir) .
+        ' && ' .
+        'export BOT_TOKEN=' .
+        escapeshellarg($bot['token']) .
+        ' && ' .
+        'export ADMIN_ID=' .
+        escapeshellarg($bot['admin_id']) .
+        ' && ' .
+        'export PORT=' .
+        $port .
+        ' && ' .
+        'export WEBHOOK_URL=' .
         escapeshellarg(
-            $bot['token']
-        )
-        .
-        ' && '
-        .
-        'export ADMIN_ID='
-        .
-        escapeshellarg(
-            $bot['admin_id']
-        )
-        .
-        ' && '
-        .
-        'export WEBHOOK_URL='
-        .
-        escapeshellarg(
-            $webhook
-        )
-        .
-        ' && '
-        .
-        'export PORT='
-        .
-        escapeshellarg(
-            (string)$port
-        )
-        .
-        ' && '
-        .
-        'nohup php -S '
-        .
-        '127.0.0.1:'
-        .
-        $port
-        .
-        ' -t '
-        .
-        escapeshellarg($dir)
-        .
-        ' > '
-        .
-        escapeshellarg($log)
-        .
+            BASE_URL .
+            '/b/' .
+            $bot['id']
+        ) .
+        ' && nohup php -S 127.0.0.1:' .
+        $port .
+        ' -t ' .
+        escapeshellarg($dir) .
+        ' > ' .
+        escapeshellarg($log) .
         ' 2>&1 & echo $!';
 
-
     $output = [];
-
 
     exec(
         $cmd,
         $output
     );
 
-
     $pid =
         (int)(
-            $output[0] ?? 0
+            $output[0]
+            ??
+            0
         );
 
-
-    if (
-        $pid <= 0
-    ) {
-
+    if ($pid <= 0) {
         return [
             'ok' => false,
-            'error' =>
-                'PHP process did not start'
+            'error' => 'PHP process could not start'
         ];
     }
 
+    $bot['pid'] = $pid;
+    $bot['status'] = 'RUNNING';
 
     file_put_contents(
-        $pidFile,
+        $dir . '/bot.pid',
         (string)$pid,
         LOCK_EX
     );
 
+    sleep(1);
 
-    usleep(900000);
+    if (!alive($pid)) {
 
-
-    if (
-        !processRunning($pid)
-    ) {
-
-        $error =
+        $logText =
             file_exists($log)
             ? file_get_contents($log)
-            : 'Unknown startup error';
-
-
-        return [
-            'ok' => false,
-            'error' =>
-                substr(
-                    $error,
-                    -3000
-                )
-        ];
-    }
-
-
-    $bot['pid'] =
-        $pid;
-
-
-    $bot['status'] =
-        'RUNNING';
-
-
-    $bot['started_at'] =
-        date('c');
-
-
-    return [
-        'ok' => true,
-        'pid' => $pid,
-        'port' => $port
-    ];
-}
-
-
-/*
-============================================================
-START PYTHON BOT
-============================================================
-*/
-
-function startPythonBot(
-    array &$bot
-): array {
-
-    $dir =
-        BOT_ROOT .
-        '/' .
-        $bot['id'];
-
-
-    $file =
-        $dir .
-        '/' .
-        $bot['filename'];
-
-
-    if (
-        !file_exists($file)
-    ) {
+            : 'No log available';
 
         return [
             'ok' => false,
-            'error' =>
-                'Python file not found'
-        ];
-    }
-
-
-    $log =
-        $dir .
-        '/bot.log';
-
-
-    $pidFile =
-        $dir .
-        '/bot.pid';
-
-
-    $port =
-        (int)(
-            $bot['port']
-            ?? 0
-        );
-
-
-    if (
-        $port <= 0
-    ) {
-
-        $port =
-            createPort();
-
-
-        $bot['port'] =
-            $port;
-    }
-
-
-    /*
-     * Install declared requirements.
-     */
-
-    $requirements =
-        $dir .
-        '/requirements.txt';
-
-
-    if (
-        file_exists(
-            $requirements
-        )
-    ) {
-
-        exec(
-
-            'python3 -m pip install '
-            .
-            '--user -r '
-            .
-            escapeshellarg(
-                $requirements
+            'error' => substr(
+                $logText,
+                -2500
             )
-            .
-            ' >/dev/null 2>&1'
-        );
+        ];
     }
 
+    return [
+        'ok' => true
+    ];
+}
 
-    $webhook =
-        BASE_DOMAIN .
-        '/b/' .
+
+/*
+========================================================
+ START PYTHON BOT
+========================================================
+*/
+
+function startPythonBot(array &$bot): array
+{
+    $dir =
+        BOTS_DIR .
+        '/' .
         $bot['id'];
 
+    $file =
+        $dir .
+        '/' .
+        $bot['filename'];
+
+    if (!file_exists($file)) {
+        return [
+            'ok' => false,
+            'error' => 'Python file not found'
+        ];
+    }
+
+    $port =
+        (int)(
+            $bot['port']
+            ??
+            random_int(12000, 50000)
+        );
+
+    $bot['port'] = $port;
+
+    $log =
+        $dir .
+        '/bot.log';
 
     $cmd =
         'cd ' .
-        escapeshellarg($dir)
-        .
-        ' && '
-        .
-        'export BOT_TOKEN='
-        .
+        escapeshellarg($dir) .
+        ' && ' .
+        'export BOT_TOKEN=' .
+        escapeshellarg($bot['token']) .
+        ' && ' .
+        'export ADMIN_ID=' .
+        escapeshellarg($bot['admin_id']) .
+        ' && ' .
+        'export PORT=' .
+        $port .
+        ' && ' .
+        'export WEBHOOK_URL=' .
         escapeshellarg(
-            $bot['token']
-        )
-        .
-        ' && '
-        .
-        'export ADMIN_ID='
-        .
-        escapeshellarg(
-            $bot['admin_id']
-        )
-        .
-        ' && '
-        .
-        'export WEBHOOK_URL='
-        .
-        escapeshellarg(
-            $webhook
-        )
-        .
-        ' && '
-        .
-        'export PORT='
-        .
-        escapeshellarg(
-            (string)$port
-        )
-        .
-        ' && '
-        .
-        'nohup python3 '
-        .
-        escapeshellarg($file)
-        .
-        ' > '
-        .
-        escapeshellarg($log)
-        .
+            BASE_URL .
+            '/b/' .
+            $bot['id']
+        ) .
+        ' && nohup python3 ' .
+        escapeshellarg($file) .
+        ' > ' .
+        escapeshellarg($log) .
         ' 2>&1 & echo $!';
 
-
     $output = [];
-
 
     exec(
         $cmd,
         $output
     );
 
-
     $pid =
         (int)(
-            $output[0] ?? 0
+            $output[0]
+            ??
+            0
         );
 
-
-    if (
-        $pid <= 0
-    ) {
-
+    if ($pid <= 0) {
         return [
             'ok' => false,
             'error' =>
-                'Python process did not start'
+                'Python process could not start. Railway PHP runtime may not have python3.'
         ];
     }
 
+    $bot['pid'] = $pid;
+    $bot['status'] = 'RUNNING';
 
     file_put_contents(
-        $pidFile,
+        $dir . '/bot.pid',
         (string)$pid,
         LOCK_EX
     );
 
+    sleep(1);
 
-    usleep(900000);
+    if (!alive($pid)) {
 
-
-    if (
-        !processRunning($pid)
-    ) {
-
-        $error =
+        $logText =
             file_exists($log)
             ? file_get_contents($log)
-            : 'Unknown startup error';
-
+            : 'No log available';
 
         return [
             'ok' => false,
-            'error' =>
-                substr(
-                    $error,
-                    -3000
-                )
+            'error' => substr(
+                $logText,
+                -2500
+            )
         ];
     }
 
-
-    $bot['pid'] =
-        $pid;
-
-
-    $bot['status'] =
-        'RUNNING';
-
-
-    $bot['started_at'] =
-        date('c');
-
-
     return [
-        'ok' => true,
-        'pid' => $pid,
-        'port' => $port
+        'ok' => true
     ];
 }
 
 
 /*
-============================================================
-START BOT
-============================================================
+========================================================
+ START
+========================================================
 */
 
-function startBot(
-    array &$bot
-): array {
-
-    $pid =
-        (int)(
-            $bot['pid']
-            ?? 0
-        );
-
-
+function startBot(array &$bot): array
+{
     if (
-        processRunning($pid)
+        alive(
+            (int)(
+                $bot['pid']
+                ??
+                0
+            )
+        )
     ) {
-
-        $bot['status'] =
-            'RUNNING';
-
+        $bot['status'] = 'RUNNING';
 
         return [
-            'ok' => true,
-            'message' =>
-                'Already running'
+            'ok' => true
         ];
     }
-
 
     if (
         strtoupper(
             $bot['language']
-        )
-        ===
-        'PHP'
+        ) === 'PHP'
     ) {
-
-        return startPHPBot(
-            $bot
-        );
+        return startPhpBot($bot);
     }
 
-
-    return startPythonBot(
-        $bot
-    );
+    return startPythonBot($bot);
 }
 
 
 /*
-============================================================
-STOP BOT
-============================================================
+========================================================
+ STOP
+========================================================
 */
 
-function stopBot(
-    array &$bot
-): void {
-
+function stopBot(array &$bot): void
+{
     $pid =
         (int)(
             $bot['pid']
-            ?? 0
+            ??
+            0
         );
 
+    if (alive($pid)) {
 
-    if (
-        processRunning($pid)
-    ) {
-
-        exec(
+        @exec(
             'kill ' .
             escapeshellarg(
                 (string)$pid
             )
         );
 
-
         usleep(500000);
 
-
-        if (
-            processRunning($pid)
-        ) {
-
-            exec(
+        if (alive($pid)) {
+            @exec(
                 'kill -9 ' .
                 escapeshellarg(
                     (string)$pid
@@ -1427,361 +712,269 @@ function stopBot(
         }
     }
 
-
-    @unlink(
-        BOT_ROOT .
-        '/' .
-        $bot['id'] .
-        '/bot.pid'
-    );
-
-
-    $bot['pid'] =
-        0;
-
-
-    $bot['status'] =
-        'STOPPED';
+    $bot['pid'] = 0;
+    $bot['status'] = 'STOPPED';
 }
 
 
 /*
-============================================================
-BOT BUTTONS
-============================================================
+========================================================
+ DELETE DIRECTORY
+========================================================
 */
 
-function botButtons(
+function removeDir(string $dir): void
+{
+    if (!is_dir($dir)) {
+        return;
+    }
+
+    $items = scandir($dir);
+
+    if ($items === false) {
+        return;
+    }
+
+    foreach ($items as $item) {
+
+        if (
+            $item === '.' ||
+            $item === '..'
+        ) {
+            continue;
+        }
+
+        $path =
+            $dir .
+            '/' .
+            $item;
+
+        if (is_dir($path)) {
+            removeDir($path);
+        } else {
+            @unlink($path);
+        }
+    }
+
+    @rmdir($dir);
+}
+
+
+/*
+========================================================
+ BUTTONS
+========================================================
+*/
+
+function buttons(
     string $id,
-    string $status
+    bool $running
 ): array {
 
-    $rows = [];
+    return [
 
-
-    if (
-        $status === 'RUNNING'
-    ) {
-
-        $rows[] = [
+        'inline_keyboard' => [
 
             [
-                'text' =>
-                    '🛑 STOP',
 
-                'callback_data' =>
-                    'stop:' . $id
+                [
+                    'text' =>
+                        $running
+                        ? '🛑 STOP'
+                        : '▶️ START',
+
+                    'callback_data' =>
+                        ($running
+                            ? 'stop:'
+                            : 'start:')
+                        .
+                        $id
+                ],
+
+                [
+                    'text' =>
+                        '🔄 RESTART',
+
+                    'callback_data' =>
+                        'restart:' .
+                        $id
+                ]
+
             ],
 
             [
-                'text' =>
-                    '🔄 RESTART',
 
-                'callback_data' =>
-                    'restart:' . $id
-            ]
+                [
+                    'text' =>
+                        '📋 LOGS',
 
-        ];
+                    'callback_data' =>
+                        'logs:' .
+                        $id
+                ],
 
-    } else {
+                [
+                    'text' =>
+                        'ℹ️ INFO',
 
-        $rows[] = [
+                    'callback_data' =>
+                        'info:' .
+                        $id
+                ]
+
+            ],
 
             [
-                'text' =>
-                    '🚀 START',
 
-                'callback_data' =>
-                    'start:' . $id
+                [
+                    'text' =>
+                        '🗑 DELETE',
+
+                    'callback_data' =>
+                        'delete:' .
+                        $id
+                ]
+
             ]
 
-        ];
-    }
-
-
-    $rows[] = [
-
-        [
-            'text' =>
-                '📋 LOGS',
-
-            'callback_data' =>
-                'logs:' . $id
-        ],
-
-        [
-            'text' =>
-                'ℹ️ INFO',
-
-            'callback_data' =>
-                'info:' . $id
         ]
 
-    ];
-
-
-    $rows[] = [
-
-        [
-            'text' =>
-                '🗑 DELETE',
-
-            'callback_data' =>
-                'delete:' . $id
-        ]
-
-    ];
-
-
-    return [
-        'inline_keyboard' =>
-            $rows
     ];
 }
 
 
 /*
-============================================================
-DASHBOARD
-============================================================
+========================================================
+ DASHBOARD
+========================================================
 */
 
 function dashboard(): string
 {
     $bots =
-        db();
+        loadBots();
 
+    $total = count($bots);
 
-    $total =
-        count($bots);
+    $running = 0;
 
+    $stopped = 0;
 
-    $runningCount =
-        0;
-
-
-    $stoppedCount =
-        0;
-
-
-    foreach (
-        $bots as $bot
-    ) {
-
-        $pid =
-            (int)(
-                $bot['pid']
-                ?? 0
-            );
-
+    foreach ($bots as $bot) {
 
         if (
-            processRunning($pid)
+            alive(
+                (int)(
+                    $bot['pid']
+                    ??
+                    0
+                )
+            )
         ) {
-
-            $runningCount++;
-
+            $running++;
         } else {
-
-            $stoppedCount++;
+            $stopped++;
         }
     }
 
-
-    $u =
-        usage();
-
-
     return
+        "🚀 <b>VICKY BOT HOSTING</b>\n\n" .
 
-        "🚀 <b>VICKY BOT HOSTING</b>\n\n"
+        "🤖 Total Bots: <b>" .
+        $total .
+        "</b>\n" .
 
-        .
-        "🤖 Total Bots: <b>"
-        .
-        $total
-        .
-        "</b>\n"
+        "🟢 Running: <b>" .
+        $running .
+        "</b>\n" .
 
-        .
-        "🟢 Running: <b>"
-        .
-        $runningCount
-        .
-        "</b>\n"
+        "🔴 Stopped: <b>" .
+        $stopped .
+        "</b>\n\n" .
 
-        .
-        "🔴 Stopped: <b>"
-        .
-        $stoppedCount
-        .
-        "</b>\n"
+        "🌐 Railway Domain:\n" .
+        BASE_URL .
+        "\n\n" .
 
-        .
-        "📤 Today: <b>"
-        .
-        $u['count']
-        .
-        "/"
-        .
-        DAILY_LIMIT
-        .
-        "</b>\n\n"
-
-        .
-        "🌐 Railway Domain:\n"
-        .
-        BASE_DOMAIN;
+        "📤 Upload a PHP/Python bot file to deploy it automatically.";
 }
 
 
 /*
-============================================================
-BOT INFO
-============================================================
+========================================================
+ BOT INFO
+========================================================
 */
 
-function botInfo(
-    array $bot
-): string {
-
-    $wh =
-        BASE_DOMAIN .
-        '/b/' .
-        $bot['id'];
-
-
-    $status =
-        processRunning(
+function botInfo(array $bot): string
+{
+    $running =
+        alive(
             (int)(
                 $bot['pid']
-                ?? 0
+                ??
+                0
             )
-        )
-        ? '🟢 RUNNING'
-        : '🔴 STOPPED';
-
-
-    $webhook =
-        getWebhookInfo(
-            $bot['token']
         );
 
-
-    $lastError =
-        $webhook['result']['last_error_message']
-        ?? 'None';
-
-
-    $pending =
-        $webhook['result']['pending_update_count']
-        ?? 0;
-
-
     return
-
-        "🤖 <b>"
-        .
+        "🤖 <b>" .
         h(
             $bot['username']
-            ?? 'Unknown'
-        )
-        .
-        "</b>\n\n"
+            ??
+            'Unknown'
+        ) .
+        "</b>\n\n" .
 
-        .
-        "Status: "
-        .
-        $status
-        .
-        "\n"
+        "Status: " .
+        (
+            $running
+            ? '🟢 RUNNING'
+            : '🔴 STOPPED'
+        ) .
+        "\n" .
 
-        .
-        "Language: "
-        .
+        "Language: <b>" .
         h(
             $bot['language']
-        )
-        .
-        "\n"
+        ) .
+        "</b>\n" .
 
-        .
-        "Telegram ID: "
-        .
+        "Bot ID: <code>" .
         h(
             $bot['telegram_id']
-            ?? ''
-        )
-        .
-        "\n"
+            ??
+            ''
+        ) .
+        "</code>\n" .
 
-        .
-        "Detected Admin ID: "
-        .
+        "Admin ID: <code>" .
         h(
             $bot['admin_id']
-            ?? 'Not found'
-        )
-        .
-        "\n\n"
+            ??
+            ''
+        ) .
+        "</code>\n\n" .
 
-        .
-        "Webhook:\n"
-        .
-        h($wh)
-        .
-        "\n\n"
-
-        .
-        "Pending Updates: "
-        .
-        h($pending)
-        .
-        "\n"
-
-        .
-        "Last Telegram Error: "
-        .
-        h($lastError);
+        "Webhook:\n" .
+        BASE_URL .
+        '/b/' .
+        $bot['id'];
 }
 
 
 /*
-============================================================
-WEBHOOK PROXY
-============================================================
+========================================================
+ HOSTED WEBHOOK PROXY
+========================================================
 */
 
-function handleWebhookProxy(): void
+function proxyBot(string $id): void
 {
-    $uri =
-        $_SERVER['REQUEST_URI']
-        ?? '';
-
-
-    if (
-        !preg_match(
-            '#^/b/([A-Za-z0-9_-]+)(?:/.*)?$#',
-            $uri,
-            $match
-        )
-    ) {
-
-        return;
-    }
-
-
-    $id =
-        $match[1];
-
-
     $bots =
-        db();
+        loadBots();
 
-
-    if (
-        !isset($bots[$id])
-    ) {
+    if (!isset($bots[$id])) {
 
         http_response_code(404);
 
@@ -1789,32 +982,25 @@ function handleWebhookProxy(): void
             'Content-Type: application/json'
         );
 
-
         echo json_encode([
             'ok' => false,
-            'error' =>
-                'Bot not found'
+            'error' => 'Bot not found'
         ]);
-
 
         exit;
     }
 
-
     $bot =
         $bots[$id];
-
 
     $pid =
         (int)(
             $bot['pid']
-            ?? 0
+            ??
+            0
         );
 
-
-    if (
-        !processRunning($pid)
-    ) {
+    if (!alive($pid)) {
 
         http_response_code(503);
 
@@ -1822,101 +1008,65 @@ function handleWebhookProxy(): void
             'Content-Type: application/json'
         );
 
-
         echo json_encode([
             'ok' => false,
-            'error' =>
-                'Bot is not running'
+            'error' => 'Bot is stopped'
         ]);
-
 
         exit;
     }
-
 
     $port =
         (int)(
             $bot['port']
-            ?? 0
+            ??
+            0
         );
 
-
-    if (
-        $port <= 0
-    ) {
+    if ($port <= 0) {
 
         http_response_code(503);
 
-        echo 'Invalid bot port';
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Invalid bot port'
+        ]);
 
         exit;
     }
-
 
     $body =
         file_get_contents(
             'php://input'
         );
 
-
-    $contentType =
-        $_SERVER['CONTENT_TYPE']
-        ??
-        'application/json';
-
-
-    $target =
-        'http://127.0.0.1:'
-        .
-        $port
-        .
-        '/';
-
-
     $ch =
         curl_init(
-            $target
+            'http://127.0.0.1:' .
+            $port .
+            '/'
         );
 
+    curl_setopt_array($ch, [
 
-    curl_setopt_array(
-        $ch,
-        [
+        CURLOPT_RETURNTRANSFER => true,
 
-            CURLOPT_RETURNTRANSFER =>
-                true,
+        CURLOPT_POST => true,
 
-            CURLOPT_POST =>
-                true,
+        CURLOPT_POSTFIELDS => $body,
 
-            CURLOPT_POSTFIELDS =>
-                $body,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json'
+        ],
 
-            CURLOPT_HTTPHEADER => [
+        CURLOPT_CONNECTTIMEOUT => 5,
 
-                'Content-Type: '
-                .
-                $contentType,
+        CURLOPT_TIMEOUT => 30
 
-                'X-Vicky-Bot-ID: '
-                .
-                $id
+    ]);
 
-            ],
-
-            CURLOPT_CONNECTTIMEOUT =>
-                5,
-
-            CURLOPT_TIMEOUT =>
-                30
-
-        ]
-    );
-
-
-    $response =
+    $result =
         curl_exec($ch);
-
 
     $http =
         curl_getinfo(
@@ -1924,284 +1074,162 @@ function handleWebhookProxy(): void
             CURLINFO_HTTP_CODE
         );
 
-
-    $error =
-        curl_error($ch);
-
-
     curl_close($ch);
 
-
-    if (
-        $response === false
-    ) {
+    if ($result === false) {
 
         http_response_code(502);
-
-        header(
-            'Content-Type: application/json'
-        );
-
 
         echo json_encode([
             'ok' => false,
             'error' =>
-                'Internal bot unreachable',
-            'details' =>
-                $error
+                'Bot process unreachable'
         ]);
-
 
         exit;
     }
 
-
     http_response_code(
-        $http >= 100
+        $http > 0
         ? $http
         : 200
     );
-
 
     header(
         'Content-Type: application/json'
     );
 
-
-    echo $response;
-
+    echo $result;
 
     exit;
 }
 
 
 /*
-============================================================
-WEBHOOK MUST RUN BEFORE TELEGRAM UPDATE HANDLER
-============================================================
+========================================================
+ CALLBACK HANDLER
+========================================================
 */
 
-if (
-    PHP_SAPI !== 'cli'
-) {
+function handleCallback(
+    array $callback
+): void {
 
-    handleWebhookProxy();
-}
+    $userId =
+        $callback['from']['id']
+        ??
+        0;
 
-
-/*
-============================================================
-TELEGRAM UPDATE
-============================================================
-*/
-
-$raw =
-    file_get_contents(
-        'php://input'
-    );
-
-
-if (
-    !$raw
-) {
-
-    echo json_encode([
-        'ok' => true,
-        'service' =>
-            'Vicky Bot Hosting',
-        'domain' =>
-            BASE_DOMAIN
-    ]);
-
-
-    exit;
-}
-
-
-$update =
-    json_decode(
-        $raw,
-        true
-    );
-
-
-if (
-    !is_array($update)
-) {
-
-    exit;
-}
-
-
-/*
-============================================================
-CALLBACK
-============================================================
-*/
-
-if (
-    isset(
-        $update['callback_query']
-    )
-) {
-
-    $cb =
-        $update['callback_query'];
-
-
-    $from =
-        $cb['from']['id']
-        ?? 0;
-
-
-    if (
-        !isAdmin($from)
-    ) {
+    if (!adminOnly($userId)) {
 
         answerCallback(
-            $cb['id'],
+            $callback['id'],
             'Admin only'
         );
 
-        exit;
+        return;
     }
-
 
     $data =
-        $cb['data']
-        ?? '';
+        $callback['data']
+        ??
+        '';
 
-
-    $message =
-        $cb['message']
-        ?? [];
-
-
-    $chatId =
-        $message['chat']['id']
-        ?? 0;
-
-
-    $messageId =
-        $message['message_id']
-        ?? 0;
-
-
-    if (
-        !str_contains(
-            $data,
-            ':'
-        )
-    ) {
-
-        answerCallback(
-            $cb['id']
-        );
-
-        exit;
-    }
-
-
-    [$action,$id] =
+    $parts =
         explode(
             ':',
             $data,
             2
         );
 
+    if (count($parts) !== 2) {
+        return;
+    }
+
+    $action = $parts[0];
+
+    $id = $parts[1];
 
     $bots =
-        db();
+        loadBots();
 
-
-    if (
-        !isset($bots[$id])
-    ) {
+    if (!isset($bots[$id])) {
 
         answerCallback(
-            $cb['id'],
+            $callback['id'],
             'Bot not found'
         );
 
-        exit;
+        return;
     }
-
 
     $bot =
         &$bots[$id];
+
+    $chatId =
+        $callback['message']['chat']['id']
+        ??
+        0;
+
+    $messageId =
+        $callback['message']['message_id']
+        ??
+        0;
 
 
     /*
      * START
      */
 
-    if (
-        $action === 'start'
-    ) {
+    if ($action === 'start') {
 
         $result =
             startBot($bot);
 
+        if ($result['ok']) {
 
-        if (
-            $result['ok']
-        ) {
+            setBotWebhook(
+                $bot['token'],
+                $id
+            );
 
-            $wh =
-                setWebhook(
-                    $bot['token'],
-                    $id
-                );
-
-
-            $bot['webhook_ok'] =
-                (bool)(
-                    $wh['ok']
-                    ?? false
-                );
-
-
-            saveDb($bots);
-
+            saveBots($bots);
 
             answerCallback(
-                $cb['id'],
+                $callback['id'],
                 'Bot started'
             );
 
-
-            editMessage(
+            editText(
                 $chatId,
                 $messageId,
                 botInfo($bot),
-                botButtons(
+                buttons(
                     $id,
-                    'RUNNING'
+                    true
                 )
             );
-
 
         } else {
 
             answerCallback(
-                $cb['id'],
+                $callback['id'],
                 'Start failed'
             );
 
-
-            sendMessage(
+            sendText(
                 $chatId,
-                "❌ <b>Start failed</b>\n\n"
-                .
+
+                "❌ <b>START FAILED</b>\n\n" .
                 h(
                     $result['error']
-                    ?? 'Unknown error'
+                    ??
+                    'Unknown error'
                 )
             );
         }
 
-
-        exit;
+        return;
     }
 
 
@@ -2209,33 +1237,28 @@ if (
      * STOP
      */
 
-    if (
-        $action === 'stop'
-    ) {
+    if ($action === 'stop') {
 
         stopBot($bot);
 
-        saveDb($bots);
-
+        saveBots($bots);
 
         answerCallback(
-            $cb['id'],
+            $callback['id'],
             'Bot stopped'
         );
 
-
-        editMessage(
+        editText(
             $chatId,
             $messageId,
             botInfo($bot),
-            botButtons(
+            buttons(
                 $id,
-                'STOPPED'
+                false
             )
         );
 
-
-        exit;
+        return;
     }
 
 
@@ -2243,61 +1266,43 @@ if (
      * RESTART
      */
 
-    if (
-        $action === 'restart'
-    ) {
+    if ($action === 'restart') {
 
         stopBot($bot);
 
         usleep(500000);
 
-
         $result =
             startBot($bot);
 
+        if ($result['ok']) {
 
-        if (
-            $result['ok']
-        ) {
-
-            setWebhook(
+            setBotWebhook(
                 $bot['token'],
                 $id
             );
-
-
-            saveDb($bots);
-
-
-            answerCallback(
-                $cb['id'],
-                'Restarted'
-            );
-
-
-            editMessage(
-                $chatId,
-                $messageId,
-                botInfo($bot),
-                botButtons(
-                    $id,
-                    'RUNNING'
-                )
-            );
-
-        } else {
-
-            saveDb($bots);
-
-
-            answerCallback(
-                $cb['id'],
-                'Restart failed'
-            );
         }
 
+        saveBots($bots);
 
-        exit;
+        answerCallback(
+            $callback['id'],
+            $result['ok']
+                ? 'Restarted'
+                : 'Restart failed'
+        );
+
+        editText(
+            $chatId,
+            $messageId,
+            botInfo($bot),
+            buttons(
+                $id,
+                $result['ok']
+            )
+        );
+
+        return;
     }
 
 
@@ -2305,28 +1310,31 @@ if (
      * INFO
      */
 
-    if (
-        $action === 'info'
-    ) {
+    if ($action === 'info') {
+
+        $running =
+            alive(
+                (int)(
+                    $bot['pid']
+                    ??
+                    0
+                )
+            );
 
         answerCallback(
-            $cb['id']
+            $callback['id']
         );
 
-
-        sendMessage(
+        sendText(
             $chatId,
             botInfo($bot),
-            botButtons(
+            buttons(
                 $id,
-                $bot['status']
-                ??
-                'STOPPED'
+                $running
             )
         );
 
-
-        exit;
+        return;
     }
 
 
@@ -2334,22 +1342,18 @@ if (
      * LOGS
      */
 
-    if (
-        $action === 'logs'
-    ) {
+    if ($action === 'logs') {
 
         $log =
-            BOT_ROOT .
+            BOTS_DIR .
             '/' .
             $id .
             '/bot.log';
 
-
         $text =
             file_exists($log)
             ? file_get_contents($log)
-            : 'No logs yet.';
-
+            : 'No logs available.';
 
         $text =
             substr(
@@ -2357,23 +1361,20 @@ if (
                 -3500
             );
 
-
         answerCallback(
-            $cb['id']
+            $callback['id']
         );
 
-
-        sendMessage(
+        sendText(
             $chatId,
-            "📋 <b>BOT LOG</b>\n\n<pre>"
-            .
-            h($text)
-            .
+
+            "📋 <b>BOT LOGS</b>\n\n" .
+            "<pre>" .
+            h($text) .
             "</pre>"
         );
 
-
-        exit;
+        return;
     }
 
 
@@ -2381,765 +1382,697 @@ if (
      * DELETE
      */
 
-    if (
-        $action === 'delete'
-    ) {
+    if ($action === 'delete') {
 
         stopBot($bot);
 
-
         removeDir(
-            BOT_ROOT .
+            BOTS_DIR .
             '/' .
             $id
         );
-
 
         unset(
             $bots[$id]
         );
 
-
-        saveDb($bots);
-
+        saveBots($bots);
 
         answerCallback(
-            $cb['id'],
-            'Deleted'
+            $callback['id'],
+            'Bot deleted'
         );
 
-
-        editMessage(
+        editText(
             $chatId,
             $messageId,
             "🗑 <b>Bot deleted successfully.</b>"
         );
 
-
-        exit;
+        return;
     }
-
-
-    exit;
 }
 
 
 /*
-============================================================
-NORMAL MESSAGE
-============================================================
+========================================================
+ PROCESS INCOMING REQUEST
+========================================================
 */
 
-$message =
-    $update['message']
-    ?? null;
-
-
-if (
-    !$message
-) {
-
-    exit;
-}
-
-
-$chatId =
-    $message['chat']['id']
-    ?? 0;
-
-
-$userId =
-    $message['from']['id']
-    ?? 0;
-
-
-if (
-    !isAdmin($userId)
-) {
-
-    sendMessage(
-        $chatId,
-        "⛔ <b>Access denied.</b>\n\n"
-        .
-        "This hosting manager is admin-only."
+$path =
+    parse_url(
+        $_SERVER['REQUEST_URI']
+        ??
+        '/',
+        PHP_URL_PATH
     );
-
-
-    exit;
-}
 
 
 /*
-============================================================
-COMMANDS
-============================================================
-*/
-
-$text =
-    trim(
-        $message['text']
-        ?? ''
-    );
-
+ Hosted bot webhook
+ */
 
 if (
-    $text === '/start'
-    ||
-    $text === '/panel'
-)
-{
-
-    sendMessage(
-        $chatId,
-        dashboard(),
-        [
-            'inline_keyboard' => [
-
-                [
-                    [
-                        'text' =>
-                            '📊 REFRESH',
-                        'callback_data' =>
-                            'refresh:dashboard'
-                    ]
-                ],
-
-                [
-                    [
-                        'text' =>
-                            '🤖 MY BOTS',
-                        'callback_data' =>
-                            'list:dashboard'
-                    ]
-                ]
-
-            ]
-        ]
-    );
-
-
-    exit;
-}
-
-
-if (
-    $text === '/bots'
-)
-{
-
-    $bots =
-        db();
-
-
-    if (
-        !$bots
-    ) {
-
-        sendMessage(
-            $chatId,
-            "🤖 <b>Total Bots: 0</b>"
-        );
-
-
-        exit;
-    }
-
-
-    $out =
-        "🤖 <b>HOSTED BOTS</b>\n\n";
-
-
-    foreach (
-        $bots as $bot
-    ) {
-
-        $status =
-            processRunning(
-                (int)(
-                    $bot['pid']
-                    ?? 0
-                )
-            )
-            ? '🟢'
-            : '🔴';
-
-
-        $out .=
-
-            $status
-            .
-            " <b>"
-            .
-            h(
-                $bot['username']
-                ??
-                $bot['filename']
-            )
-            .
-            "</b>\n"
-            .
-            "ID: "
-            .
-            h(
-                $bot['id']
-            )
-            .
-            "\n"
-            .
-            "Webhook: "
-            .
-            BASE_DOMAIN .
-            '/b/' .
-            $bot['id']
-            .
-            "\n\n";
-    }
-
-
-    sendMessage(
-        $chatId,
-        $out
-    );
-
-
-    exit;
-}
-
-
-/*
-============================================================
-UPLOAD
-============================================================
-*/
-
-if (
-    isset(
-        $message['document']
+    is_string($path) &&
+    preg_match(
+        '#^/b/([A-Za-z0-9_-]+)$#',
+        $path,
+        $match
     )
 ) {
 
-    $document =
-        $message['document'];
-
-
-    $filename =
-        $document['file_name']
-        ?? '';
-
-
-    $extension =
-        strtolower(
-            pathinfo(
-                $filename,
-                PATHINFO_EXTENSION
-            )
-        );
-
-
-    if (
-        !in_array(
-            $extension,
-            ['php','py'],
-            true
-        )
-    ) {
-
-        sendMessage(
-            $chatId,
-            "❌ Sirf <b>.php</b> aur <b>.py</b> files allowed hain."
-        );
-
-
-        exit;
-    }
-
-
-    $usage =
-        usage();
-
-
-    if (
-        $usage['count']
-        >=
-        DAILY_LIMIT
-    ) {
-
-        sendMessage(
-            $chatId,
-            "⚠️ <b>Daily limit reached.</b>\n\n"
-            .
-            "Limit: "
-            .
-            DAILY_LIMIT
-        );
-
-
-        exit;
-    }
-
-
-    /*
-     * Telegram file download
-     */
-
-    $fileId =
-        $document['file_id'];
-
-
-    $fileInfo =
-        telegram(
-            'getFile',
-            [
-                'file_id' =>
-                    $fileId
-            ]
-        );
-
-
-    if (
-        !($fileInfo['ok'] ?? false)
-    ) {
-
-        sendMessage(
-            $chatId,
-            "❌ Telegram file information failed."
-        );
-
-
-        exit;
-    }
-
-
-    $filePath =
-        $fileInfo['result']['file_path']
-        ??
-        '';
-
-
-    if (
-        $filePath === ''
-    ) {
-
-        sendMessage(
-            $chatId,
-            "❌ File path unavailable."
-        );
-
-
-        exit;
-    }
-
-
-    global $MANAGER_BOT_TOKEN;
-
-
-    $downloadUrl =
-        'https://api.telegram.org/file/bot'
-        .
-        $MANAGER_BOT_TOKEN
-        .
-        '/'
-        .
-        $filePath;
-
-
-    $source =
-        @file_get_contents(
-            $downloadUrl
-        );
-
-
-    if (
-        $source === false
-    ) {
-
-        sendMessage(
-            $chatId,
-            "❌ File download failed."
-        );
-
-
-        exit;
-    }
-
-
-    /*
-     * Basic size protection.
-     */
-
-    if (
-        strlen($source)
-        >
-        20 * 1024 * 1024
-    ) {
-
-        sendMessage(
-            $chatId,
-            "❌ File too large for Telegram Bot API."
-        );
-
-
-        exit;
-    }
-
-
-    /*
-     * Detect token.
-     */
-
-    $token =
-        detectToken(
-            $source
-        );
-
-
-    if (
-        !$token
-    ) {
-
-        sendMessage(
-            $chatId,
-            "❌ <b>Telegram bot token not found.</b>\n\n"
-            .
-            "File mein valid Telegram bot token hona chahiye."
-        );
-
-
-        exit;
-    }
-
-
-    /*
-     * Detect admin.
-     */
-
-    $detectedAdmin =
-        detectAdminId(
-            $source
-        );
-
-
-    if (
-        !$detectedAdmin
-    ) {
-
-        $detectedAdmin =
-            ADMIN_ID;
-    }
-
-
-    /*
-     * Telegram verification.
-     */
-
-    $verify =
-        verifyBot(
-            $token
-        );
-
-
-    if (
-        !($verify['ok'] ?? false)
-    ) {
-
-        sendMessage(
-            $chatId,
-            "❌ <b>BOT VERIFICATION FAILED</b>\n\n"
-            .
-            "Telegram token invalid hai."
-        );
-
-
-        exit;
-    }
-
-
-    /*
-     * Create bot directory.
-     */
-
-    $id =
-        createBotId();
-
-
-    $dir =
-        BOT_ROOT .
-        '/' .
-        $id;
-
-
-    @mkdir(
-        $dir,
-        0755,
-        true
+    proxyBot(
+        $match[1]
     );
-
-
-    file_put_contents(
-        $dir .
-        '/' .
-        basename($filename),
-        $source,
-        LOCK_EX
-    );
-
-
-    $bots =
-        db();
-
-
-    $bots[$id] = [
-
-        'id' =>
-            $id,
-
-        'filename' =>
-            basename($filename),
-
-        'language' =>
-            strtoupper(
-                $extension
-            ),
-
-        'token' =>
-            $token,
-
-        'admin_id' =>
-            $detectedAdmin,
-
-        'telegram_id' =>
-            $verify['id']
-            ??
-            '',
-
-        'username' =>
-            '@' .
-            (
-                $verify['username']
-                ??
-                'unknown'
-            ),
-
-        'first_name' =>
-            $verify['first_name']
-            ??
-            '',
-
-        'pid' =>
-            0,
-
-        'port' =>
-            createPort(),
-
-        'status' =>
-            'STOPPED',
-
-        'created_at' =>
-            date('c')
-
-    ];
-
-
-    /*
-     * Instant start.
-     */
-
-    $result =
-        startBot(
-            $bots[$id]
-        );
-
-
-    if (
-        !($result['ok'] ?? false)
-    ) {
-
-        $bots[$id]['status'] =
-            'ERROR';
-
-
-        $bots[$id]['error'] =
-            $result['error']
-            ??
-            'Unknown error';
-
-
-        saveDb($bots);
-
-
-        sendMessage(
-            $chatId,
-
-            "❌ <b>BOT VERIFIED BUT START FAILED</b>\n\n"
-
-            .
-            "🤖 "
-            .
-            h(
-                $bots[$id]['username']
-            )
-            .
-            "\n\n"
-
-            .
-            "<b>Error:</b>\n"
-            .
-            h(
-                $bots[$id]['error']
-            )
-        );
-
-
-        exit;
-    }
-
-
-    /*
-     * Automatic webhook.
-     */
-
-    $wh =
-        setWebhook(
-            $token,
-            $id
-        );
-
-
-    $bots[$id]['webhook_ok'] =
-        (bool)(
-            $wh['ok']
-            ??
-            false
-        );
-
-
-    saveDb($bots);
-
-
-    increaseUsage();
-
-
-    $webhookUrl =
-        BASE_DOMAIN .
-        '/b/' .
-        $id;
-
-
-    sendMessage(
-        $chatId,
-
-        "✅ <b>BOT HOSTED SUCCESSFULLY</b>\n\n"
-
-        .
-        "🤖 Bot: <b>"
-        .
-        h(
-            $bots[$id]['username']
-        )
-        .
-        "</b>\n"
-
-        .
-        "🆔 Telegram ID: <code>"
-        .
-        h(
-            $bots[$id]['telegram_id']
-        )
-        .
-        "</code>\n"
-
-        .
-        "👤 Admin ID: <code>"
-        .
-        h(
-            $bots[$id]['admin_id']
-        )
-        .
-        "</code>\n"
-
-        .
-        "💻 Language: <b>"
-        .
-        h(
-            $extension
-        )
-        .
-        "</b>\n"
-
-        .
-        "🟢 Status: <b>RUNNING</b>\n\n"
-
-        .
-        "🌐 Railway:\n"
-        .
-        BASE_DOMAIN
-        .
-        "\n\n"
-
-        .
-        "🔗 Webhook:\n"
-        .
-        h(
-            $webhookUrl
-        )
-        .
-        "\n\n"
-
-        .
-        "📊 Today: "
-        .
-        usage()['count']
-        .
-        "/"
-        .
-        DAILY_LIMIT,
-
-        botButtons(
-            $id,
-            'RUNNING'
-        )
-    );
-
 
     exit;
 }
 
 
 /*
-============================================================
-REFRESH / UNKNOWN
-============================================================
-*/
+ Health
+ */
 
-if (
-    $text === '/status'
-)
-{
+if ($path === '/health') {
 
-    sendMessage(
-        $chatId,
-        dashboard()
+    header(
+        'Content-Type: application/json'
     );
 
+    echo json_encode([
+        'ok' => true,
+        'service' => 'Vicky Bot Hosting',
+        'domain' => BASE_URL,
+        'time' => date('c')
+    ]);
 
     exit;
 }
 
 
-sendMessage(
-    $chatId,
+/*
+ Manager Telegram webhook
+ */
 
-    "📌 <b>VICKY BOT HOSTING</b>\n\n"
+if ($path === '/telegram') {
 
-    .
-    "/start - Dashboard\n"
-    .
-    "/bots - All hosted bots\n"
-    .
-    "/status - Server status\n\n"
+    $raw =
+        file_get_contents(
+            'php://input'
+        );
 
-    .
-    "📤 PHP/Python file upload karo."
+    $update =
+        json_decode(
+            $raw ?: '',
+            true
+        );
+
+    if (!is_array($update)) {
+        exit;
+    }
+
+    if (
+        isset(
+            $update['callback_query']
+        )
+    ) {
+
+        handleCallback(
+            $update['callback_query']
+        );
+
+        exit;
+    }
+
+    $message =
+        $update['message']
+        ??
+        null;
+
+    if (!$message) {
+        exit;
+    }
+
+    $chatId =
+        $message['chat']['id']
+        ??
+        0;
+
+    $userId =
+        $message['from']['id']
+        ??
+        0;
+
+    if (!adminOnly($userId)) {
+
+        sendText(
+            $chatId,
+            "⛔ <b>ACCESS DENIED</b>"
+        );
+
+        exit;
+    }
+
+
+    /*
+     * COMMAND
+     */
+
+    $text =
+        trim(
+            $message['text']
+            ??
+            ''
+        );
+
+
+    /*
+     * START
+     */
+
+    if (
+        $text === '/start' ||
+        $text === '/panel'
+    ) {
+
+        sendText(
+            $chatId,
+            dashboard(),
+            [
+                'inline_keyboard' => [
+                    [
+                        [
+                            'text' =>
+                                '🔄 REFRESH',
+                            'callback_data' =>
+                                'refresh:dashboard'
+                        ]
+                    ]
+                ]
+            ]
+        );
+
+        exit;
+    }
+
+
+    /*
+     * BOTS
+     */
+
+    if ($text === '/bots') {
+
+        $bots =
+            loadBots();
+
+        if (!$bots) {
+
+            sendText(
+                $chatId,
+                "🤖 <b>Total Bots: 0</b>"
+            );
+
+            exit;
+        }
+
+        foreach ($bots as $bot) {
+
+            $running =
+                alive(
+                    (int)(
+                        $bot['pid']
+                        ??
+                        0
+                    )
+                );
+
+            sendText(
+                $chatId,
+                botInfo($bot),
+                buttons(
+                    $bot['id'],
+                    $running
+                )
+            );
+        }
+
+        exit;
+    }
+
+
+    /*
+     * STATUS
+     */
+
+    if ($text === '/status') {
+
+        sendText(
+            $chatId,
+            dashboard()
+        );
+
+        exit;
+    }
+
+
+    /*
+     * FILE UPLOAD
+     */
+
+    if (
+        isset(
+            $message['document']
+        )
+    ) {
+
+        $document =
+            $message['document'];
+
+        $filename =
+            $document['file_name']
+            ??
+            '';
+
+        $extension =
+            strtolower(
+                pathinfo(
+                    $filename,
+                    PATHINFO_EXTENSION
+                )
+            );
+
+
+        if (
+            !in_array(
+                $extension,
+                ['php', 'py'],
+                true
+            )
+        ) {
+
+            sendText(
+                $chatId,
+
+                "❌ <b>Invalid file</b>\n\n" .
+                "Only <b>.php</b> and <b>.py</b> files are supported."
+            );
+
+            exit;
+        }
+
+
+        /*
+         * Telegram file info
+         */
+
+        $fileInfo =
+            tg(
+                'getFile',
+                [
+                    'file_id' =>
+                        $document['file_id']
+                ]
+            );
+
+
+        if (
+            !($fileInfo['ok'] ?? false)
+        ) {
+
+            sendText(
+                $chatId,
+                "❌ Telegram file download failed."
+            );
+
+            exit;
+        }
+
+
+        $filePath =
+            $fileInfo['result']['file_path']
+            ??
+            '';
+
+
+        $downloadUrl =
+            'https://api.telegram.org/file/bot' .
+            BOT_TOKEN .
+            '/' .
+            $filePath;
+
+
+        $source =
+            @file_get_contents(
+                $downloadUrl
+            );
+
+
+        if ($source === false) {
+
+            sendText(
+                $chatId,
+                "❌ Unable to download uploaded file."
+            );
+
+            exit;
+        }
+
+
+        /*
+         * TOKEN
+         */
+
+        $token =
+            detectToken($source);
+
+
+        if (!$token) {
+
+            sendText(
+                $chatId,
+
+                "❌ <b>BOT TOKEN NOT FOUND</b>\n\n" .
+                "File ke andar valid Telegram bot token hona chahiye."
+            );
+
+            exit;
+        }
+
+
+        /*
+         * VERIFY
+         */
+
+        $verified =
+            verifyBot($token);
+
+
+        if (
+            !($verified['ok'] ?? false)
+        ) {
+
+            sendText(
+                $chatId,
+
+                "❌ <b>BOT VERIFICATION FAILED</b>\n\n" .
+                "Detected Telegram token valid nahi hai."
+            );
+
+            exit;
+        }
+
+
+        /*
+         * CREATE BOT
+         */
+
+        $id =
+            botId();
+
+        $dir =
+            BOTS_DIR .
+            '/' .
+            $id;
+
+        @mkdir(
+            $dir,
+            0755,
+            true
+        );
+
+
+        $safeFilename =
+            basename($filename);
+
+
+        file_put_contents(
+            $dir .
+            '/' .
+            $safeFilename,
+            $source,
+            LOCK_EX
+        );
+
+
+        $adminId =
+            detectAdminId(
+                $source
+            );
+
+
+        $bots =
+            loadBots();
+
+
+        $bots[$id] = [
+
+            'id' =>
+                $id,
+
+            'filename' =>
+                $safeFilename,
+
+            'language' =>
+                strtoupper(
+                    $extension
+                ),
+
+            'token' =>
+                $token,
+
+            'admin_id' =>
+                $adminId,
+
+            'telegram_id' =>
+                $verified['id']
+                ??
+                '',
+
+            'username' =>
+                '@' .
+                (
+                    $verified['username']
+                    ??
+                    'unknown'
+                ),
+
+            'name' =>
+                $verified['name']
+                ??
+                '',
+
+            'pid' =>
+                0,
+
+            'port' =>
+                random_int(
+                    12000,
+                    50000
+                ),
+
+            'status' =>
+                'STARTING',
+
+            'created_at' =>
+                date('c')
+
+        ];
+
+
+        /*
+         * START IMMEDIATELY
+         */
+
+        $result =
+            startBot(
+                $bots[$id]
+            );
+
+
+        if (
+            !($result['ok'] ?? false)
+        ) {
+
+            $bots[$id]['status'] =
+                'ERROR';
+
+            $bots[$id]['error'] =
+                $result['error']
+                ??
+                'Unknown error';
+
+            saveBots($bots);
+
+            sendText(
+                $chatId,
+
+                "⚠️ <b>BOT VERIFIED</b>\n\n" .
+
+                "🤖 " .
+                h(
+                    $bots[$id]['username']
+                ) .
+                "\n\n" .
+
+                "❌ <b>START FAILED</b>\n\n" .
+
+                "<pre>" .
+                h(
+                    $bots[$id]['error']
+                ) .
+                "</pre>"
+            );
+
+            exit;
+        }
+
+
+        /*
+         * WEBHOOK
+         */
+
+        $webhook =
+            setBotWebhook(
+                $token,
+                $id
+            );
+
+
+        $bots[$id]['webhook'] =
+            BASE_URL .
+            '/b/' .
+            $id;
+
+        $bots[$id]['webhook_ok'] =
+            (bool)(
+                $webhook['ok']
+                ??
+                false
+            );
+
+        $bots[$id]['status'] =
+            'RUNNING';
+
+
+        saveBots($bots);
+
+
+        /*
+         * SUCCESS
+         */
+
+        sendText(
+            $chatId,
+
+            "🎉 <b>BOT HOSTED SUCCESSFULLY</b>\n\n" .
+
+            "🤖 Bot: <b>" .
+            h(
+                $bots[$id]['username']
+            ) .
+            "</b>\n" .
+
+            "🆔 Telegram ID: <code>" .
+            h(
+                $bots[$id]['telegram_id']
+            ) .
+            "</code>\n" .
+
+            "👤 Admin ID: <code>" .
+            h(
+                $bots[$id]['admin_id']
+            ) .
+            "</code>\n" .
+
+            "💻 Type: <b>" .
+            h($extension) .
+            "</b>\n" .
+
+            "🟢 Status: <b>RUNNING</b>\n\n" .
+
+            "🔗 Webhook:\n" .
+            BASE_URL .
+            '/b/' .
+            $id
+        );
+
+        exit;
+    }
+
+
+    /*
+     * DEFAULT
+     */
+
+    sendText(
+        $chatId,
+
+        "🚀 <b>VICKY BOT HOSTING</b>\n\n" .
+
+        "/start — Dashboard\n" .
+        "/bots — Hosted bots\n" .
+        "/status — Server status\n\n" .
+
+        "📤 PHP/Python Telegram bot file upload karo."
+    );
+
+    exit;
+}
+
+
+/*
+========================================================
+ ROOT PAGE
+========================================================
+*/
+
+header(
+    'Content-Type: text/html; charset=utf-8'
 );
 
-?>
+echo '<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vicky Bot Hosting</title>
+<style>
+body{
+    background:#07111f;
+    color:#fff;
+    font-family:Arial,sans-serif;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:100vh;
+    margin:0;
+}
+.card{
+    padding:35px;
+    border:1px solid #24344a;
+    border-radius:20px;
+    background:#0d1928;
+    text-align:center;
+    max-width:500px;
+}
+.ok{
+    color:#45e68a;
+    font-size:20px;
+}
+small{
+    color:#9aa8b8;
+}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="ok">● ONLINE</div>
+<h1>VICKY BOT HOSTING</h1>
+<p>Telegram Bot Hosting Manager</p>
+<small>' .
+h(BASE_URL) .
+'</small>
+</div>
+</body>
+</html>';
