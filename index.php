@@ -2,1403 +2,1172 @@
 declare(strict_types=1);
 
 /*
-===========================================================
- VICKY BOT HOSTING
- SINGLE FILE RAILWAY VERSION
- PHP WEBHOOK BOTS
-===========================================================
+|--------------------------------------------------------------------------
+| ADMIN ZIP EXTRACTOR BOT - SINGLE FILE
+|--------------------------------------------------------------------------
+| PHP 8+
+| Extensions: curl, zip, json
+|
+| IMPORTANT:
+| Normal Telegram Bot API has a file-download limitation, so this code
+| cannot magically bypass Telegram's own file-size limits.
+|--------------------------------------------------------------------------
 */
 
-error_reporting(E_ALL);
-ini_set('display_errors', '0');
-set_time_limit(60);
+set_time_limit(0);
+ini_set('memory_limit', '512M');
+ignore_user_abort(true);
 
 /* =========================
    CONFIG
 ========================= */
 
-const ADMIN_ID = '8897821078';
+const BOT_TOKEN = '7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nqYI';
+const ADMIN_ID  = '8897821078';
 
-const MANAGER_TOKEN =
-'7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nqYI';
+const BASE_DIR  = __DIR__ . '/zip_storage';
+const UPLOAD_DIR = BASE_DIR . '/uploads';
+const EXTRACT_DIR = BASE_DIR . '/extracted';
+const JOB_FILE = BASE_DIR . '/job.json';
 
-const RAILWAY_URL =
-'https://bot-hosting-production-7668.up.railway.app';
+const MAX_EXTRACTED_BYTES = 1099511627776; // 1 TB
+const MAX_FILES = 2000000;
 
-/* =========================
-   STORAGE
-========================= */
-
-$ROOT = __DIR__;
-
-$DATA = $ROOT . '/data';
-$BOT_DIR = $ROOT . '/hosted_bots';
-$ZIP_DIR = $ROOT . '/zip_files';
-
-if (!is_dir($DATA)) {
-    @mkdir($DATA, 0777, true);
-}
-
-if (!is_dir($BOT_DIR)) {
-    @mkdir($BOT_DIR, 0777, true);
-}
-
-if (!is_dir($ZIP_DIR)) {
-    @mkdir($ZIP_DIR, 0777, true);
-}
-
-$DB = $DATA . '/bots.json';
-
-if (!file_exists($DB)) {
-    @file_put_contents($DB, '{}');
-}
+const PROGRESS_INTERVAL = 2; // seconds
 
 /* =========================
-   DATABASE
+   DIRECTORY SETUP
 ========================= */
 
-function getBots(): array
-{
-    global $DB;
-
-    $x = @file_get_contents($DB);
-
-    if (!$x) {
-        return [];
+foreach ([BASE_DIR, UPLOAD_DIR, EXTRACT_DIR] as $dir) {
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
     }
-
-    $data = json_decode($x, true);
-
-    return is_array($data) ? $data : [];
-}
-
-function saveBots(array $data): void
-{
-    global $DB;
-
-    @file_put_contents(
-        $DB,
-        json_encode(
-            $data,
-            JSON_PRETTY_PRINT |
-            JSON_UNESCAPED_SLASHES
-        ),
-        LOCK_EX
-    );
 }
 
 /* =========================
-   TELEGRAM API
+   HELPERS
 ========================= */
 
-function telegram(
-    string $token,
-    string $method,
-    array $params = []
-): array {
-
-    $url =
-        'https://api.telegram.org/bot' .
-        $token .
-        '/' .
-        $method;
+function tg(string $method, array $data = []): array
+{
+    $url = 'https://api.telegram.org/bot' . BOT_TOKEN . '/' . $method;
 
     $ch = curl_init($url);
 
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $params,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT => 30,
+        CURLOPT_POSTFIELDS => $data,
+        CURLOPT_CONNECTTIMEOUT => 20,
+        CURLOPT_TIMEOUT => 120,
         CURLOPT_SSL_VERIFYPEER => true
     ]);
 
     $response = curl_exec($ch);
 
-    curl_close($ch);
-
     if ($response === false) {
+        $error = curl_error($ch);
+        curl_close($ch);
+
         return [
             'ok' => false,
-            'description' => 'cURL request failed'
+            'description' => $error
         ];
     }
 
-    $json = json_decode(
-        $response,
-        true
-    );
+    curl_close($ch);
 
-    return is_array($json)
-        ? $json
-        : [
-            'ok' => false,
-            'description' => 'Invalid Telegram response'
-        ];
+    $decoded = json_decode($response, true);
+
+    return is_array($decoded) ? $decoded : [
+        'ok' => false,
+        'description' => 'Invalid Telegram response'
+    ];
 }
 
-/* =========================
-   MESSAGE
-========================= */
-
-function sendMessage(
-    int|string $chat,
-    string $text,
-    ?array $keyboard = null
-): void {
-
-    $params = [
-        'chat_id' => $chat,
+function sendMessage(int|string $chatId, string $text, ?array $keyboard = null): void
+{
+    $data = [
+        'chat_id' => $chatId,
         'text' => $text,
-        'parse_mode' => 'HTML'
+        'parse_mode' => 'HTML',
+        'disable_web_page_preview' => true
     ];
 
     if ($keyboard !== null) {
-        $params['reply_markup'] =
-            json_encode($keyboard);
+        $data['reply_markup'] = json_encode($keyboard);
     }
 
-    telegram(
-        MANAGER_TOKEN,
-        'sendMessage',
-        $params
+    tg('sendMessage', $data);
+}
+
+function editMessage(int|string $chatId, int $messageId, string $text): void
+{
+    tg('editMessageText', [
+        'chat_id' => $chatId,
+        'message_id' => $messageId,
+        'text' => $text,
+        'parse_mode' => 'HTML',
+        'disable_web_page_preview' => true
+    ]);
+}
+
+function formatBytes(float $bytes): string
+{
+    if ($bytes < 1024) {
+        return number_format($bytes, 0) . ' B';
+    }
+
+    $units = ['KB', 'MB', 'GB', 'TB'];
+
+    $i = -1;
+
+    do {
+        $bytes /= 1024;
+        $i++;
+    } while ($bytes >= 1024 && $i < count($units) - 1);
+
+    return number_format($bytes, 2) . ' ' . $units[$i];
+}
+
+function formatTime(float $seconds): string
+{
+    $seconds = max(0, (int)$seconds);
+
+    $h = intdiv($seconds, 3600);
+    $m = intdiv($seconds % 3600, 60);
+    $s = $seconds % 60;
+
+    if ($h > 0) {
+        return sprintf('%02d:%02d:%02d', $h, $m, $s);
+    }
+
+    return sprintf('%02d:%02d', $m, $s);
+}
+
+function adminOnly(array $message): bool
+{
+    $id = $message['from']['id'] ?? '';
+
+    return (string)$id === ADMIN_ID;
+}
+
+function loadJob(): ?array
+{
+    if (!is_file(JOB_FILE)) {
+        return null;
+    }
+
+    $data = @file_get_contents(JOB_FILE);
+
+    if (!$data) {
+        return null;
+    }
+
+    $job = json_decode($data, true);
+
+    return is_array($job) ? $job : null;
+}
+
+function saveJob(array $job): void
+{
+    @file_put_contents(
+        JOB_FILE,
+        json_encode($job, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+        LOCK_EX
     );
 }
 
-/* =========================
-   TOKEN CHECK
-========================= */
-
-function findBotToken(string $code): ?string
+function clearJob(): void
 {
-    if (
-        preg_match(
-            '/\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/',
-            $code,
-            $m
-        )
-    ) {
-        return $m[0];
+    if (is_file(JOB_FILE)) {
+        @unlink(JOB_FILE);
     }
-
-    return null;
 }
 
-function verifyBot(string $token): ?array
+function sanitizeZipPath(string $path): ?string
 {
-    $result = telegram(
-        $token,
-        'getMe'
-    );
+    $path = str_replace('\\', '/', $path);
+    $path = trim($path);
 
+    if ($path === '') {
+        return null;
+    }
+
+    /*
+     * Reject absolute paths.
+     */
     if (
-        empty($result['ok']) ||
-        empty($result['result'])
+        str_starts_with($path, '/') ||
+        preg_match('/^[A-Za-z]:\//', $path)
     ) {
         return null;
     }
 
-    return $result['result'];
-}
+    $parts = explode('/', $path);
+    $clean = [];
 
-/* =========================
-   WEBHOOK
-========================= */
+    foreach ($parts as $part) {
 
-function botWebhook(string $id): string
-{
-    return
-        rtrim(RAILWAY_URL, '/') .
-        '/?bot=' .
-        urlencode($id);
-}
-
-function setBotWebhook(
-    string $token,
-    string $id
-): array {
-
-    return telegram(
-        $token,
-        'setWebhook',
-        [
-            'url' => botWebhook($id),
-            'drop_pending_updates' => true,
-            'allowed_updates' => json_encode([
-                'message',
-                'edited_message',
-                'callback_query',
-                'inline_query',
-                'chat_member',
-                'my_chat_member'
-            ])
-        ]
-    );
-}
-
-/* =========================
-   MANAGER WEBHOOK
-========================= */
-
-function setManagerWebhook(): array
-{
-    return telegram(
-        MANAGER_TOKEN,
-        'setWebhook',
-        [
-            'url' =>
-                rtrim(RAILWAY_URL, '/') .
-                '/?manager=1',
-            'drop_pending_updates' => true
-        ]
-    );
-}
-
-/* =========================
-   DOWNLOAD TELEGRAM FILE
-========================= */
-
-function downloadTelegramFile(
-    string $fileId,
-    string $destination
-): bool {
-
-    $result = telegram(
-        MANAGER_TOKEN,
-        'getFile',
-        [
-            'file_id' => $fileId
-        ]
-    );
-
-    if (
-        empty($result['ok']) ||
-        empty(
-            $result['result']['file_path']
-        )
-    ) {
-        return false;
-    }
-
-    $filePath =
-        $result['result']['file_path'];
-
-    $url =
-        'https://api.telegram.org/file/bot' .
-        MANAGER_TOKEN .
-        '/' .
-        $filePath;
-
-    $ch = curl_init($url);
-
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 60,
-        CURLOPT_FOLLOWLOCATION => true
-    ]);
-
-    $data = curl_exec($ch);
-
-    curl_close($ch);
-
-    if ($data === false) {
-        return false;
-    }
-
-    return
-        @file_put_contents(
-            $destination,
-            $data
-        ) !== false;
-}
-
-/* =========================
-   SAFE ID
-========================= */
-
-function safeId(string $id): string
-{
-    return preg_replace(
-        '/[^a-zA-Z0-9_-]/',
-        '',
-        $id
-    );
-}
-
-/* =========================
-   POLLING DETECTION
-========================= */
-
-function isPollingBot(string $code): bool
-{
-    return
-        stripos(
-            $code,
-            'getUpdates'
-        ) !== false;
-}
-
-/* =========================
-   BOT DEPLOY
-========================= */
-
-function deployBot(
-    int|string $chat,
-    array $document
-): void {
-
-    $filename =
-        $document['file_name'] ??
-        'bot.php';
-
-    $extension =
-        strtolower(
-            pathinfo(
-                $filename,
-                PATHINFO_EXTENSION
-            )
-        );
-
-    if ($extension !== 'php') {
-
-        sendMessage(
-            $chat,
-            "❌ <b>Only PHP bots are supported in this one-file Railway version.</b>\n\n" .
-            "Python bots require a Python runtime."
-        );
-
-        return;
-    }
-
-    /*
-     * Telegram Bot API normal file download limit.
-     */
-
-    $size =
-        intval(
-            $document['file_size'] ?? 0
-        );
-
-    if ($size > 20 * 1024 * 1024) {
-
-        sendMessage(
-            $chat,
-            "❌ File is larger than Telegram Bot API's normal 20 MB download limit."
-        );
-
-        return;
-    }
-
-    sendMessage(
-        $chat,
-        "⏳ <b>Bot received.</b>\n\n" .
-        "🔎 Reading source...\n" .
-        "🔐 Detecting token..."
-    );
-
-    $temporary =
-        sys_get_temp_dir() .
-        '/vicky_' .
-        bin2hex(
-            random_bytes(8)
-        ) .
-        '.php';
-
-    if (
-        !downloadTelegramFile(
-            $document['file_id'],
-            $temporary
-        )
-    ) {
-
-        sendMessage(
-            $chat,
-            "❌ <b>File download failed.</b>"
-        );
-
-        return;
-    }
-
-    $source =
-        @file_get_contents(
-            $temporary
-        );
-
-    if (!$source) {
-
-        @unlink($temporary);
-
-        sendMessage(
-            $chat,
-            "❌ <b>Could not read PHP file.</b>"
-        );
-
-        return;
-    }
-
-    /*
-     * This architecture is for webhook PHP bots.
-     */
-
-    if (isPollingBot($source)) {
-
-        @unlink($temporary);
-
-        sendMessage(
-            $chat,
-            "⚠️ <b>This PHP bot uses getUpdates polling.</b>\n\n" .
-            "This single-file Railway version runs PHP bots through Telegram Webhooks.\n\n" .
-            "Please convert the bot to webhook mode."
-        );
-
-        return;
-    }
-
-    $token =
-        findBotToken($source);
-
-    if (!$token) {
-
-        @unlink($temporary);
-
-        sendMessage(
-            $chat,
-            "❌ <b>Telegram bot token not found.</b>\n\n" .
-            "Make sure the PHP file contains the bot token."
-        );
-
-        return;
-    }
-
-    sendMessage(
-        $chat,
-        "🔐 <b>Token detected.</b>\n\n" .
-        "Checking token with Telegram..."
-    );
-
-    $me =
-        verifyBot($token);
-
-    if (!$me) {
-
-        @unlink($temporary);
-
-        sendMessage(
-            $chat,
-            "❌ <b>BOT TOKEN INVALID</b>\n\n" .
-            "Telegram getMe verification failed."
-        );
-
-        return;
-    }
-
-    /*
-     * Create unique ID.
-     */
-
-    $id =
-        'bot_' .
-        date('Ymd_His') .
-        '_' .
-        substr(
-            bin2hex(
-                random_bytes(6)
-            ),
-            0,
-            8
-        );
-
-    global $BOT_DIR;
-
-    $directory =
-        $BOT_DIR .
-        '/' .
-        $id;
-
-    @mkdir(
-        $directory,
-        0777,
-        true
-    );
-
-    /*
-     * Keep original filename.
-     */
-
-    $safeFilename =
-        preg_replace(
-            '/[^a-zA-Z0-9._-]/',
-            '_',
-            $filename
-        );
-
-    $botFile =
-        $directory .
-        '/' .
-        $safeFilename;
-
-    if (
-        !@rename(
-            $temporary,
-            $botFile
-        )
-    ) {
-
-        @copy(
-            $temporary,
-            $botFile
-        );
-
-        @unlink($temporary);
-    }
-
-    /*
-     * Save bot.
-     */
-
-    $bots =
-        getBots();
-
-    $bots[$id] = [
-        'id' => $id,
-        'file' => $botFile,
-        'directory' => $directory,
-        'token' => $token,
-        'username' =>
-            !empty($me['username'])
-                ? '@' . $me['username']
-                : '',
-        'telegram_id' =>
-            (string)(
-                $me['id'] ?? ''
-            ),
-        'first_name' =>
-            $me['first_name'] ?? '',
-        'created' =>
-            date('c'),
-        'status' =>
-            'running'
-    ];
-
-    saveBots($bots);
-
-    /*
-     * Set webhook.
-     */
-
-    sendMessage(
-        $chat,
-        "✅ <b>BOT VERIFIED</b>\n\n" .
-        "🤖 " .
-        htmlspecialchars(
-            $bots[$id]['username'] ?: 'Unknown'
-        ) .
-        "\n" .
-        "🆔 " .
-        htmlspecialchars(
-            $bots[$id]['telegram_id']
-        ) .
-        "\n\n" .
-        "🌐 Setting webhook..."
-    );
-
-    $webhook =
-        setBotWebhook(
-            $token,
-            $id
-        );
-
-    if (empty($webhook['ok'])) {
-
-        unset(
-            $bots[$id]
-        );
-
-        saveBots($bots);
-
-        deleteFolder(
-            $directory
-        );
-
-        sendMessage(
-            $chat,
-            "❌ <b>Webhook setup failed.</b>\n\n" .
-            htmlspecialchars(
-                $webhook['description'] ??
-                'Unknown Telegram error'
-            )
-        );
-
-        return;
-    }
-
-    sendMessage(
-        $chat,
-        "🎉 <b>BOT HOSTED SUCCESSFULLY</b>\n\n" .
-
-        "🤖 Bot: <b>" .
-        htmlspecialchars(
-            $bots[$id]['username'] ?: 'Unknown'
-        ) .
-        "</b>\n" .
-
-        "🆔 Telegram ID: <code>" .
-        htmlspecialchars(
-            $bots[$id]['telegram_id']
-        ) .
-        "</code>\n" .
-
-        "🟢 Status: <b>RUNNING</b>\n\n" .
-
-        "🌐 Railway:\n" .
-        "<code>" .
-        htmlspecialchars(
-            RAILWAY_URL
-        ) .
-        "</code>\n\n" .
-
-        "🔗 Webhook:\n" .
-        "<code>" .
-        htmlspecialchars(
-            botWebhook($id)
-        ) .
-        "</code>"
-    );
-}
-
-/* =========================
-   DELETE DIRECTORY
-========================= */
-
-function deleteFolder(string $directory): void
-{
-    if (!is_dir($directory)) {
-        return;
-    }
-
-    $items =
-        @scandir($directory);
-
-    if (!$items) {
-        return;
-    }
-
-    foreach ($items as $item) {
-
-        if (
-            $item === '.' ||
-            $item === '..'
-        ) {
+        if ($part === '' || $part === '.') {
             continue;
         }
 
-        $path =
-            $directory .
-            '/' .
-            $item;
-
-        if (is_dir($path)) {
-            deleteFolder($path);
-        } else {
-            @unlink($path);
+        if ($part === '..') {
+            return null;
         }
-    }
-
-    @rmdir($directory);
-}
-
-/* =========================
-   EXECUTE HOSTED PHP BOT
-========================= */
-
-function executeHostedBot(
-    string $id
-): void {
-
-    $id =
-        safeId($id);
-
-    $bots =
-        getBots();
-
-    if (!isset($bots[$id])) {
-
-        http_response_code(404);
-
-        echo 'BOT NOT FOUND';
-
-        return;
-    }
-
-    $bot =
-        $bots[$id];
-
-    $file =
-        $bot['file'] ?? '';
-
-    if (
-        !$file ||
-        !file_exists($file)
-    ) {
-
-        http_response_code(500);
-
-        echo 'BOT FILE NOT FOUND';
-
-        return;
-    }
-
-    /*
-     * Bot receives the original Telegram
-     * webhook body through php://input.
-     */
-
-    $_SERVER['BOT_ID'] =
-        $id;
-
-    $_SERVER['BOT_TOKEN'] =
-        $bot['token'];
-
-    $_SERVER['WEBHOOK_URL'] =
-        botWebhook($id);
-
-    putenv(
-        'BOT_ID=' .
-        $id
-    );
-
-    putenv(
-        'BOT_TOKEN=' .
-        $bot['token']
-    );
-
-    putenv(
-        'WEBHOOK_URL=' .
-        botWebhook($id)
-    );
-
-    /*
-     * Execute uploaded bot.
-     */
-
-    try {
-
-        require $file;
-
-    } catch (
-        Throwable $e
-    ) {
-
-        http_response_code(500);
-
-        echo 'BOT ERROR';
 
         /*
-         * Save error for admin.
+         * Remove NUL bytes.
          */
+        if (strpos($part, "\0") !== false) {
+            return null;
+        }
 
-        $errorFile =
-            dirname($file) .
-            '/error.log';
-
-        @file_put_contents(
-            $errorFile,
-            date('c') .
-            ' ' .
-            $e->getMessage() .
-            PHP_EOL,
-            FILE_APPEND
-        );
+        $clean[] = $part;
     }
+
+    if (!$clean) {
+        return null;
+    }
+
+    return implode('/', $clean);
+}
+
+function isInside(string $path, string $root): bool
+{
+    $root = rtrim(str_replace('\\', '/', $root), '/') . '/';
+    $path = str_replace('\\', '/', $path);
+
+    return str_starts_with($path, $root);
+}
+
+function updateProgress(
+    int $chatId,
+    int $messageId,
+    int $current,
+    int $total,
+    float $processedBytes,
+    float $totalBytes,
+    float $startTime,
+    string $status = 'Extracting'
+): void {
+    static $lastUpdate = 0;
+
+    $now = microtime(true);
+
+    if (($now - $lastUpdate) < PROGRESS_INTERVAL && $current < $total) {
+        return;
+    }
+
+    $lastUpdate = $now;
+
+    $filePercent = $total > 0
+        ? ($current / $total) * 100
+        : 0;
+
+    $bytePercent = $totalBytes > 0
+        ? ($processedBytes / $totalBytes) * 100
+        : 0;
+
+    $percent = max($filePercent, $bytePercent);
+    $percent = min(100, $percent);
+
+    $elapsed = $now - $startTime;
+
+    $speed = $elapsed > 0
+        ? $processedBytes / $elapsed
+        : 0;
+
+    $remaining = $speed > 0 && $totalBytes > $processedBytes
+        ? ($totalBytes - $processedBytes) / $speed
+        : 0;
+
+    $bars = 20;
+    $filled = (int)floor(($percent / 100) * $bars);
+
+    $progressBar =
+        str_repeat('█', $filled) .
+        str_repeat('░', $bars - $filled);
+
+    $text =
+        "⚙️ <b>{$status}</b>\n\n" .
+        "[$progressBar] <b>" . number_format($percent, 1) . "%</b>\n\n" .
+        "📦 Files: <b>{$current}</b> / <b>{$total}</b>\n" .
+        "📤 Processed: <b>" . formatBytes($processedBytes) . "</b>\n" .
+        "📦 Total: <b>" . formatBytes($totalBytes) . "</b>\n" .
+        "🚀 Speed: <b>" . formatBytes($speed) . "/s</b>\n" .
+        "⏱ Elapsed: <b>" . formatTime($elapsed) . "</b>\n" .
+        "⏳ ETA: <b>" . formatTime($remaining) . "</b>";
+
+    editMessage($chatId, $messageId, $text);
+}
+
+function extractionStats(string $dir): array
+{
+    $stats = [
+        'files' => 0,
+        'folders' => 0,
+        'bytes' => 0,
+        'php' => 0,
+        'python' => 0,
+        'zip' => 0,
+        'images' => 0,
+        'videos' => 0,
+        'docs' => 0,
+        'other' => 0
+    ];
+
+    if (!is_dir($dir)) {
+        return $stats;
+    }
+
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator(
+            $dir,
+            FilesystemIterator::SKIP_DOTS
+        ),
+        RecursiveIteratorIterator::SELF_FIRST
+    );
+
+    foreach ($iterator as $item) {
+
+        if ($item->isDir()) {
+            $stats['folders']++;
+            continue;
+        }
+
+        if (!$item->isFile()) {
+            continue;
+        }
+
+        $stats['files']++;
+
+        $size = @filesize($item->getPathname());
+
+        if ($size !== false) {
+            $stats['bytes'] += $size;
+        }
+
+        $ext = strtolower(pathinfo(
+            $item->getFilename(),
+            PATHINFO_EXTENSION
+        ));
+
+        switch ($ext) {
+            case 'php':
+            case 'php3':
+            case 'php4':
+            case 'php5':
+            case 'phtml':
+                $stats['php']++;
+                break;
+
+            case 'py':
+            case 'pyw':
+                $stats['python']++;
+                break;
+
+            case 'zip':
+            case 'rar':
+            case '7z':
+            case 'tar':
+            case 'gz':
+                $stats['zip']++;
+                break;
+
+            case 'jpg':
+            case 'jpeg':
+            case 'png':
+            case 'gif':
+            case 'webp':
+            case 'bmp':
+            case 'svg':
+                $stats['images']++;
+                break;
+
+            case 'mp4':
+            case 'mkv':
+            case 'avi':
+            case 'mov':
+            case 'webm':
+                $stats['videos']++;
+                break;
+
+            case 'txt':
+            case 'pdf':
+            case 'doc':
+            case 'docx':
+            case 'xls':
+            case 'xlsx':
+            case 'csv':
+                $stats['docs']++;
+                break;
+
+            default:
+                $stats['other']++;
+        }
+    }
+
+    return $stats;
 }
 
 /* =========================
-   MANAGER COMMANDS
+   ZIP EXTRACTION
 ========================= */
 
-function handleManagerUpdate(
-    array $update
-): void {
+function extractZip(
+    string $zipPath,
+    string $destination,
+    int $chatId,
+    int $progressMessageId
+): array {
 
-    if (
-        isset(
-            $update['callback_query']
-        )
-    ) {
-
-        $cb =
-            $update['callback_query'];
-
-        $userId =
-            (string)(
-                $cb['from']['id'] ?? ''
-            );
-
-        if (
-            $userId !== ADMIN_ID
-        ) {
-
-            telegram(
-                MANAGER_TOKEN,
-                'answerCallbackQuery',
-                [
-                    'callback_query_id' =>
-                        $cb['id'],
-                    'text' =>
-                        'Admin only'
-                ]
-            );
-
-            return;
-        }
-
-        $chat =
-            $cb['message']['chat']['id']
-            ?? 0;
-
-        $messageId =
-            $cb['message']['message_id']
-            ?? 0;
-
-        $action =
-            $cb['data'] ?? '';
-
-        telegram(
-            MANAGER_TOKEN,
-            'answerCallbackQuery',
-            [
-                'callback_query_id' =>
-                    $cb['id']
-            ]
+    if (!class_exists('ZipArchive')) {
+        throw new RuntimeException(
+            'PHP ZipArchive extension is not installed.'
         );
-
-        managerAction(
-            $chat,
-            $messageId,
-            $action
-        );
-
-        return;
     }
 
-    if (
-        !isset(
-            $update['message']
-        )
-    ) {
-        return;
+    $zip = new ZipArchive();
+
+    $open = $zip->open($zipPath);
+
+    if ($open !== true) {
+        throw new RuntimeException(
+            'ZIP could not be opened. Error code: ' . $open
+        );
     }
 
-    $message =
-        $update['message'];
+    $totalEntries = $zip->numFiles;
 
-    $chat =
-        $message['chat']['id']
-        ?? 0;
+    if ($totalEntries > MAX_FILES) {
+        $zip->close();
 
-    $userId =
-        (string)(
-            $message['from']['id']
-            ?? ''
+        throw new RuntimeException(
+            'ZIP contains too many entries.'
         );
-
-    if (
-        $userId !== ADMIN_ID
-    ) {
-
-        sendMessage(
-            $chat,
-            "❌ <b>Access Denied</b>"
-        );
-
-        return;
     }
 
     /*
-     * Document upload.
+     * First calculate total uncompressed size.
      */
+    $totalUncompressed = 0;
 
-    if (
-        isset(
-            $message['document']
-        )
-    ) {
+    for ($i = 0; $i < $totalEntries; $i++) {
 
-        deployBot(
-            $chat,
-            $message['document']
-        );
+        $stat = $zip->statIndex($i);
 
-        return;
-    }
+        if (!$stat) {
+            continue;
+        }
 
-    $text =
-        trim(
-            $message['text'] ?? ''
-        );
+        $size = (int)($stat['size'] ?? 0);
 
-    if (
-        $text === '/start' ||
-        $text === '/menu'
-    ) {
+        $totalUncompressed += $size;
 
-        sendMessage(
-            $chat,
-            dashboardText(),
-            keyboard()
-        );
+        if ($totalUncompressed > MAX_EXTRACTED_BYTES) {
+            $zip->close();
 
-        return;
-    }
-
-    if (
-        $text === '/setup'
-    ) {
-
-        $result =
-            setManagerWebhook();
-
-        sendMessage(
-            $chat,
-            !empty($result['ok'])
-                ? "✅ <b>Manager webhook set successfully.</b>\n\n" .
-                  htmlspecialchars(
-                      rtrim(
-                          RAILWAY_URL,
-                          '/'
-                      ) .
-                      '/?manager=1'
-                  )
-                : "❌ <b>Webhook failed</b>\n\n" .
-                  htmlspecialchars(
-                      $result['description']
-                      ?? 'Unknown error'
-                  )
-        );
-
-        return;
-    }
-
-    if (
-        $text === '/bots'
-    ) {
-
-        sendMessage(
-            $chat,
-            botList(),
-            keyboard()
-        );
-
-        return;
-    }
-
-    if (
-        $text === '/health'
-    ) {
-
-        sendMessage(
-            $chat,
-            health()
-        );
-
-        return;
-    }
-
-    sendMessage(
-        $chat,
-        dashboardText(),
-        keyboard()
-    );
-}
-
-/* =========================
-   DASHBOARD
-========================= */
-
-function dashboardText(): string
-{
-    $bots =
-        getBots();
-
-    $total =
-        count($bots);
-
-    $running =
-        0;
-
-    foreach ($bots as $bot) {
-        if (
-            ($bot['status'] ?? '') ===
-            'running'
-        ) {
-            $running++;
+            throw new RuntimeException(
+                'Extraction would exceed the 1 TB safety limit.'
+            );
         }
     }
 
-    return
-        "🤖 <b>VICKY BOT HOSTING</b>\n\n" .
+    /*
+     * Clean destination.
+     */
+    if (!is_dir($destination)) {
+        @mkdir($destination, 0775, true);
+    }
 
-        "📦 Total Bots: <b>" .
-        $total .
-        "</b>\n" .
+    $rootReal = realpath($destination);
 
-        "🟢 Running: <b>" .
-        $running .
-        "</b>\n" .
+    if ($rootReal === false) {
+        $zip->close();
 
-        "🔴 Stopped: <b>" .
-        ($total - $running) .
-        "</b>\n\n" .
+        throw new RuntimeException(
+            'Could not create extraction directory.'
+        );
+    }
 
-        "🌐 Railway:\n" .
-        "<code>" .
-        htmlspecialchars(
-            RAILWAY_URL
-        ) .
-        "</code>";
-}
+    $startTime = microtime(true);
+    $processedBytes = 0;
+    $processedFiles = 0;
+    $unsafe = 0;
 
-function keyboard(): array
-{
+    for ($i = 0; $i < $totalEntries; $i++) {
+
+        $stat = $zip->statIndex($i);
+
+        if (!$stat) {
+            $unsafe++;
+            continue;
+        }
+
+        $rawName = (string)($stat['name'] ?? '');
+
+        $safeName = sanitizeZipPath($rawName);
+
+        if ($safeName === null) {
+            $unsafe++;
+            continue;
+        }
+
+        $isDirectory =
+            str_ends_with($rawName, '/') ||
+            (($stat['size'] ?? 0) === 0 &&
+             !str_contains(basename($rawName), '.'));
+
+        $target = $destination . '/' . $safeName;
+
+        if ($isDirectory) {
+
+            if (!is_dir($target)) {
+                @mkdir($target, 0775, true);
+            }
+
+        } else {
+
+            $parent = dirname($target);
+
+            if (!is_dir($parent)) {
+                @mkdir($parent, 0775, true);
+            }
+
+            /*
+             * Validate parent path.
+             */
+            $parentReal = realpath($parent);
+
+            if (
+                $parentReal === false ||
+                !isInside($parentReal, $rootReal)
+            ) {
+                $unsafe++;
+                continue;
+            }
+
+            $stream = $zip->getStream($rawName);
+
+            if ($stream === false) {
+                $unsafe++;
+                continue;
+            }
+
+            $out = @fopen($target, 'wb');
+
+            if ($out === false) {
+                fclose($stream);
+                $unsafe++;
+                continue;
+            }
+
+            while (!feof($stream)) {
+
+                $buffer = fread($stream, 1024 * 1024);
+
+                if ($buffer === false) {
+                    break;
+                }
+
+                if ($buffer === '') {
+                    continue;
+                }
+
+                fwrite($out, $buffer);
+
+                $len = strlen($buffer);
+
+                $processedBytes += $len;
+
+                if ($processedBytes > MAX_EXTRACTED_BYTES) {
+                    fclose($out);
+                    fclose($stream);
+                    $zip->close();
+
+                    throw new RuntimeException(
+                        'Extraction exceeded the 1 TB safety limit.'
+                    );
+                }
+            }
+
+            fclose($out);
+            fclose($stream);
+
+            $processedFiles++;
+
+            updateProgress(
+                $chatId,
+                $progressMessageId,
+                $processedFiles,
+                max(1, $totalEntries),
+                $processedBytes,
+                $totalUncompressed,
+                $startTime
+            );
+        }
+    }
+
+    $zip->close();
+
     return [
-        'inline_keyboard' => [
-            [
-                [
-                    'text' =>
-                        '📊 Dashboard',
-                    'callback_data' =>
-                        'dashboard'
-                ]
-            ],
-            [
-                [
-                    'text' =>
-                        '🤖 Bots',
-                    'callback_data' =>
-                        'bots'
-                ]
-            ],
-            [
-                [
-                    'text' =>
-                        '⚙️ Health',
-                    'callback_data' =>
-                        'health'
-                ]
-            ],
-            [
-                [
-                    'text' =>
-                        '🔗 Set Manager Webhook',
-                    'callback_data' =>
-                        'setup'
-                ]
-            ]
-        ]
+        'entries' => $totalEntries,
+        'files' => $processedFiles,
+        'bytes' => $processedBytes,
+        'unsafe' => $unsafe,
+        'time' => microtime(true) - $startTime
     ];
 }
 
 /* =========================
-   BOT LIST
+   TELEGRAM UPDATE
 ========================= */
 
-function botList(): string
-{
-    $bots =
-        getBots();
+$input = file_get_contents('php://input');
 
-    if (!$bots) {
-        return
-            "🤖 <b>BOT LIST</b>\n\n" .
-            "No bots hosted.";
+if ($input !== false && trim($input) !== '') {
+
+    $update = json_decode($input, true);
+
+    if (!is_array($update)) {
+        http_response_code(400);
+        exit;
     }
 
-    $text =
-        "🤖 <b>HOSTED BOTS</b>\n\n";
+    /*
+     * CALLBACK
+     */
+    if (isset($update['callback_query'])) {
 
-    foreach ($bots as $id => $bot) {
+        $callback = $update['callback_query'];
 
-        $text .=
-            "🤖 <b>" .
-            htmlspecialchars(
-                $bot['username'] ??
-                'Unknown'
-            ) .
-            "</b>\n" .
+        $fromId = (string)($callback['from']['id'] ?? '');
 
-            "ID: <code>" .
-            htmlspecialchars(
-                $id
-            ) .
-            "</code>\n" .
+        tg('answerCallbackQuery', [
+            'callback_query_id' => $callback['id']
+        ]);
 
-            "Status: 🟢 " .
-            htmlspecialchars(
-                $bot['status'] ??
-                'unknown'
-            ) .
-            "\n\n";
-    }
+        if ($fromId !== ADMIN_ID) {
+            exit;
+        }
 
-    return $text;
-}
+        $chatId = $callback['message']['chat']['id'] ?? null;
+        $messageId = $callback['message']['message_id'] ?? null;
+        $data = $callback['data'] ?? '';
 
-/* =========================
-   CALLBACK ACTIONS
-========================= */
+        if ($data === 'status') {
 
-function managerAction(
-    int|string $chat,
-    int $messageId,
-    string $action
-): void {
+            $job = loadJob();
 
-    if (
-        $action === 'dashboard'
-    ) {
-
-        telegram(
-            MANAGER_TOKEN,
-            'editMessageText',
-            [
-                'chat_id' =>
-                    $chat,
-                'message_id' =>
+            if (!$job) {
+                editMessage(
+                    $chatId,
                     $messageId,
-                'text' =>
-                    dashboardText(),
-                'parse_mode' =>
-                    'HTML',
-                'reply_markup' =>
-                    json_encode(
-                        keyboard()
-                    )
-            ]
-        );
+                    "🟢 <b>Extractor Ready</b>\n\nNo extraction is currently running."
+                );
+            } else {
 
-        return;
-    }
-
-    if (
-        $action === 'bots'
-    ) {
-
-        telegram(
-            MANAGER_TOKEN,
-            'editMessageText',
-            [
-                'chat_id' =>
-                    $chat,
-                'message_id' =>
+                editMessage(
+                    $chatId,
                     $messageId,
-                'text' =>
-                    botList(),
-                'parse_mode' =>
-                    'HTML',
-                'reply_markup' =>
-                    json_encode(
-                        keyboard()
-                    )
-            ]
-        );
+                    "⚙️ <b>Extraction Running</b>\n\n" .
+                    "📦 File: <code>" .
+                    htmlspecialchars($job['filename']) .
+                    "</code>\n" .
+                    "🚦 Status: <b>" .
+                    htmlspecialchars($job['status']) .
+                    "</b>\n" .
+                    "🕐 Started: <b>" .
+                    htmlspecialchars($job['started']) .
+                    "</b>"
+                );
+            }
 
-        return;
+            exit;
+        }
+
+        if ($data === 'system') {
+
+            $free = @disk_free_space(__DIR__);
+            $total = @disk_total_space(__DIR__);
+
+            $text =
+                "🖥 <b>System Storage</b>\n\n" .
+                "💾 Free: <b>" . formatBytes((float)$free) . "</b>\n" .
+                "💽 Total: <b>" . formatBytes((float)$total) . "</b>\n\n" .
+                "📦 Max extraction safety limit: <b>1 TB</b>";
+
+            editMessage($chatId, $messageId, $text);
+
+            exit;
+        }
+
+        exit;
     }
 
-    if (
-        $action === 'health'
-    ) {
+    /*
+     * MESSAGE
+     */
+    $message = $update['message'] ?? null;
 
-        telegram(
-            MANAGER_TOKEN,
-            'editMessageText',
-            [
-                'chat_id' =>
-                    $chat,
-                'message_id' =>
-                    $messageId,
-                'text' =>
-                    health(),
-                'parse_mode' =>
-                    'HTML',
-                'reply_markup' =>
-                    json_encode(
-                        keyboard()
-                    )
-            ]
-        );
-
-        return;
+    if (!$message) {
+        exit;
     }
 
-    if (
-        $action === 'setup'
-    ) {
+    $fromId = (string)($message['from']['id'] ?? '');
 
-        $result =
-            setManagerWebhook();
+    /*
+     * ADMIN ONLY
+     */
+    if ($fromId !== ADMIN_ID) {
 
-        telegram(
-            MANAGER_TOKEN,
-            'sendMessage',
-            [
-                'chat_id' =>
-                    $chat,
-                'text' =>
-                    !empty(
-                        $result['ok']
-                    )
-                    ? "✅ Manager webhook set."
-                    : "❌ Webhook failed: " .
-                      (
-                          $result['description']
-                          ?? 'Unknown'
-                      )
-            ]
-        );
+        if (isset($message['chat']['id'])) {
+            sendMessage(
+                $message['chat']['id'],
+                "⛔ <b>Access Denied</b>\n\nThis bot is private."
+            );
+        }
 
-        return;
+        exit;
     }
-}
 
-/* =========================
-   HEALTH
-========================= */
+    $chatId = $message['chat']['id'];
 
-function health(): string
-{
-    $curl =
-        function_exists(
-            'curl_init'
-        )
-        ? '✅'
-        : '❌';
+    /*
+     * COMMANDS
+     */
+    $text = trim((string)($message['text'] ?? ''));
 
-    $zip =
-        class_exists(
-            'ZipArchive'
-        )
-        ? '✅'
-        : '⚠️';
+    if ($text === '/start' || $text === '/menu') {
 
-    return
-        "⚙️ <b>SYSTEM HEALTH</b>\n\n" .
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    [
+                        'text' => '📊 Status',
+                        'callback_data' => 'status'
+                    ],
+                    [
+                        'text' => '🖥 System',
+                        'callback_data' => 'system'
+                    ]
+                ]
+            ]
+        ];
 
-        "PHP: ✅\n" .
-        "cURL: {$curl}\n" .
-        "ZIP: {$zip}\n" .
-        "Webhook Engine: ✅\n" .
-        "Railway Mode: ✅\n\n" .
-
-        "🌐 " .
-        htmlspecialchars(
-            RAILWAY_URL
+        sendMessage(
+            $chatId,
+            "🗜 <b>Advanced ZIP Extractor</b>\n\n" .
+            "📤 Send a ZIP file to start extraction.\n\n" .
+            "⚙️ Live progress\n" .
+            "⏱ Live elapsed time\n" .
+            "⏳ ETA countdown\n" .
+            "📊 File statistics\n" .
+            "🛡 Safe path extraction\n" .
+            "🔒 One extraction at a time\n" .
+            "💾 1 TB application safety limit",
+            $keyboard
         );
-}
 
-/* =========================
-   ROUTER
-========================= */
+        exit;
+    }
 
-/*
- * 1. Hosted bot webhook
- */
+    if ($text === '/status') {
 
-if (
-    isset($_GET['bot']) &&
-    $_GET['bot'] !== ''
-) {
+        $job = loadJob();
 
-    executeHostedBot(
-        (string)$_GET['bot']
+        if (!$job) {
+
+            sendMessage(
+                $chatId,
+                "🟢 <b>Extractor Ready</b>\n\nNo extraction is running."
+            );
+
+        } else {
+
+            sendMessage(
+                $chatId,
+                "⚙️ <b>Extraction Running</b>\n\n" .
+                "📦 <b>" . htmlspecialchars($job['filename']) . "</b>\n" .
+                "🚦 Status: <b>" . htmlspecialchars($job['status']) . "</b>\n" .
+                "🕐 Started: <b>" . htmlspecialchars($job['started']) . "</b>"
+            );
+        }
+
+        exit;
+    }
+
+    if ($text === '/cancel') {
+
+        $job = loadJob();
+
+        if (!$job) {
+            sendMessage(
+                $chatId,
+                "ℹ️ No extraction is currently running."
+            );
+            exit;
+        }
+
+        /*
+         * Current synchronous extraction cannot safely kill itself
+         * from another Telegram request. Mark cancellation request.
+         */
+        $job['cancel_requested'] = true;
+
+        saveJob($job);
+
+        sendMessage(
+            $chatId,
+            "🛑 <b>Cancel requested.</b>\n\n" .
+            "The extractor will stop at the next safe checkpoint."
+        );
+
+        exit;
+    }
+
+    /*
+     * DOCUMENT / ZIP
+     */
+    if (isset($message['document'])) {
+
+        $document = $message['document'];
+
+        $fileId = $document['file_id'] ?? '';
+        $fileName = $document['file_name'] ?? 'upload.zip';
+        $fileSize = (int)($document['file_size'] ?? 0);
+
+        if ($fileId === '') {
+            sendMessage($chatId, "❌ File ID missing.");
+            exit;
+        }
+
+        /*
+         * Only ZIP.
+         */
+        $extension = strtolower(
+            pathinfo($fileName, PATHINFO_EXTENSION)
+        );
+
+        if ($extension !== 'zip') {
+
+            sendMessage(
+                $chatId,
+                "❌ <b>Only ZIP files are allowed.</b>"
+            );
+
+            exit;
+        }
+
+        /*
+         * One job only.
+         */
+        $existingJob = loadJob();
+
+        if ($existingJob) {
+
+            sendMessage(
+                $chatId,
+                "⛔ <b>Extraction already running.</b>\n\n" .
+                "📦 Current file: <code>" .
+                htmlspecialchars($existingJob['filename']) .
+                "</code>\n\n" .
+                "Please wait until the current job finishes."
+            );
+
+            exit;
+        }
+
+        /*
+         * Get Telegram file info.
+         */
+        $info = tg('getFile', [
+            'file_id' => $fileId
+        ]);
+
+        if (!($info['ok'] ?? false)) {
+
+            sendMessage(
+                $chatId,
+                "❌ Telegram could not prepare this file.\n\n" .
+                "The file may exceed Telegram Bot API's downloadable file limit."
+            );
+
+            exit;
+        }
+
+        $telegramPath = $info['result']['file_path'] ?? '';
+
+        if ($telegramPath === '') {
+            sendMessage(
+                $chatId,
+                "❌ Telegram file path unavailable."
+            );
+            exit;
+        }
+
+        /*
+         * Create unique job.
+         */
+        $jobId = date('Ymd_His') . '_' . bin2hex(random_bytes(4));
+
+        $zipPath =
+            UPLOAD_DIR . '/' .
+            $jobId . '.zip';
+
+        $destination =
+            EXTRACT_DIR . '/' .
+            $jobId;
+
+        @mkdir($destination, 0775, true);
+
+        /*
+         * Mark busy BEFORE download.
+         */
+        saveJob([
+            'id' => $jobId,
+            'filename' => $fileName,
+            'status' => 'Downloading',
+            'started' => date('Y-m-d H:i:s'),
+            'cancel_requested' => false
+        ]);
+
+        $progressMessage = tg('sendMessage', [
+            'chat_id' => $chatId,
+            'text' =>
+                "📥 <b>Preparing download...</b>\n\n" .
+                "📦 File: <code>" .
+                htmlspecialchars($fileName) .
+                "</code>\n" .
+                "💾 Size: <b>" .
+                formatBytes($fileSize) .
+                "</b>",
+            'parse_mode' => 'HTML'
+        ]);
+
+        $progressMessageId =
+            (int)($progressMessage['result']['message_id'] ?? 0);
+
+        /*
+         * Download from Telegram.
+         *
+         * NOTE:
+         * Telegram's Bot API file-size restrictions still apply.
+         */
+        $downloadUrl =
+            'https://api.telegram.org/file/bot' .
+            BOT_TOKEN . '/' .
+            $telegramPath;
+
+        $fp = @fopen($zipPath, 'wb');
+
+        if ($fp === false) {
+
+            clearJob();
+
+            sendMessage(
+                $chatId,
+                "❌ Cannot create local ZIP file."
+            );
+
+            exit;
+        }
+
+        $ch = curl_init($downloadUrl);
+
+        curl_setopt_array($ch, [
+            CURLOPT_FILE => $fp,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_TIMEOUT => 0,
+            CURLOPT_SSL_VERIFYPEER => true
+        ]);
+
+        $downloadOk = curl_exec($ch);
+        $curlError = curl_error($ch);
+
+        curl_close($ch);
+        fclose($fp);
+
+        if ($downloadOk === false || !is_file($zipPath)) {
+
+            @unlink($zipPath);
+            clearJob();
+
+            if ($progressMessageId) {
+                editMessage(
+                    $chatId,
+                    $progressMessageId,
+                    "❌ <b>Download failed</b>\n\n" .
+                    htmlspecialchars($curlError ?: 'Unknown error')
+                );
+            }
+
+            exit;
+        }
+
+        /*
+         * Extraction status.
+         */
+        saveJob([
+            'id' => $jobId,
+            'filename' => $fileName,
+            'status' => 'Extracting',
+            'started' => date('Y-m-d H:i:s'),
+            'destination' => $destination,
+            'cancel_requested' => false
+        ]);
+
+        if ($progressMessageId) {
+
+            editMessage(
+                $chatId,
+                $progressMessageId,
+                "⚙️ <b>Starting extraction...</b>\n\n" .
+                "📦 <code>" .
+                htmlspecialchars($fileName) .
+                "</code>\n\n" .
+                "🔒 Extraction lock enabled.\n" .
+                "No second extraction can start."
+            );
+        }
+
+        try {
+
+            $result = extractZip(
+                $zipPath,
+                $destination,
+                $chatId,
+                $progressMessageId
+            );
+
+            /*
+             * Final statistics.
+             */
+            $stats = extractionStats($destination);
+
+            /*
+             * Delete original ZIP to save disk space.
+             */
+            @unlink($zipPath);
+
+            clearJob();
+
+            $finalText =
+                "✅ <b>EXTRACTION COMPLETED</b>\n\n" .
+                "📦 ZIP: <code>" .
+                htmlspecialchars($fileName) .
+                "</code>\n\n" .
+
+                "📁 Files: <b>" .
+                number_format($stats['files']) .
+                "</b>\n" .
+
+                "📂 Folders: <b>" .
+                number_format($stats['folders']) .
+                "</b>\n" .
+
+                "💾 Extracted: <b>" .
+                formatBytes($stats['bytes']) .
+                "</b>\n\n" .
+
+                "🐘 PHP: <b>{$stats['php']}</b>\n" .
+                "🐍 Python: <b>{$stats['python']}</b>\n" .
+                "🗜 Archives: <b>{$stats['zip']}</b>\n" .
+                "🖼 Images: <b>{$stats['images']}</b>\n" .
+                "🎬 Videos: <b>{$stats['videos']}</b>\n" .
+                "📄 Documents: <b>{$stats['docs']}</b>\n" .
+                "📦 Other: <b>{$stats['other']}</b>\n\n" .
+
+                "🛡 Unsafe entries skipped: <b>" .
+                $result['unsafe'] .
+                "</b>\n" .
+
+                "⏱ Processing time: <b>" .
+                formatTime($result['time']) .
+                "</b>\n\n" .
+
+                "🟢 <b>Extractor is ready for the next job.</b>";
+
+            if ($progressMessageId) {
+                editMessage(
+                    $chatId,
+                    $progressMessageId,
+                    $finalText
+                );
+            } else {
+                sendMessage($chatId, $finalText);
+            }
+
+        } catch (Throwable $e) {
+
+            @unlink($zipPath);
+            clearJob();
+
+            $errorText =
+                "❌ <b>EXTRACTION FAILED</b>\n\n" .
+                "📦 File: <code>" .
+                htmlspecialchars($fileName) .
+                "</code>\n\n" .
+                "⚠️ Error:\n<code>" .
+                htmlspecialchars($e->getMessage()) .
+                "</code>\n\n" .
+                "🔓 Extraction lock released.";
+
+            if ($progressMessageId) {
+                editMessage(
+                    $chatId,
+                    $progressMessageId,
+                    $errorText
+                );
+            } else {
+                sendMessage($chatId, $errorText);
+            }
+        }
+
+        exit;
+    }
+
+    /*
+     * Unknown message.
+     */
+    sendMessage(
+        $chatId,
+        "🗜 <b>ZIP Extractor</b>\n\n" .
+        "Sirf <b>.ZIP</b> file send karo.\n\n" .
+        "Commands:\n" .
+        "/start\n" .
+        "/status\n" .
+        "/cancel"
     );
 
     exit;
 }
 
-/*
- * 2. Manager webhook
- */
-
-if (
-    isset($_GET['manager']) &&
-    $_GET['manager'] === '1'
-) {
-
-    $body =
-        file_get_contents(
-            'php://input'
-        );
-
-    $update =
-        json_decode(
-            (string)$body,
-            true
-        );
-
-    if (is_array($update)) {
-        handleManagerUpdate(
-            $update
-        );
-    }
-
-    http_response_code(200);
-
-    echo 'OK';
-
-    exit;
-}
-
-/*
- * 3. Health
- */
-
-if (
-    isset($_GET['health'])
-) {
-
-    header(
-        'Content-Type: text/plain'
-    );
-
-    echo health();
-
-    exit;
-}
-
-/*
- * 4. Normal browser request.
- *
- * IMPORTANT:
- * Open the Railway URL once after deployment.
- * This installs the manager webhook.
- */
-
-$result =
-    setManagerWebhook();
-
 /* =========================
-   WEB PAGE
+   WEB DASHBOARD
 ========================= */
 
-$bots =
-    getBots();
+header('Content-Type: text/html; charset=UTF-8');
+
+$job = loadJob();
+
+$free = @disk_free_space(__DIR__);
+$total = @disk_total_space(__DIR__);
 
 ?>
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 
-<meta charset="UTF-8">
-
-<meta name="viewport"
-content="width=device-width,initial-scale=1">
-
-<title>Vicky Bot Hosting</title>
+<title>ZIP Extractor</title>
 
 <style>
-
 *{
     box-sizing:border-box;
 }
@@ -1406,216 +1175,153 @@ content="width=device-width,initial-scale=1">
 body{
     margin:0;
     min-height:100vh;
-    background:
-        radial-gradient(
-            circle at top,
-            #12346b,
-            #050912 55%,
-            #020409
-        );
-    color:white;
-    font-family:
-        Arial,
-        sans-serif;
+    font-family:Arial,sans-serif;
+    background:#07111f;
+    color:#fff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
 }
 
-.container{
-    width:min(1000px,94%);
-    margin:40px auto;
-}
-
-.header{
+.card{
+    width:min(700px,92%);
+    background:#0d1b2d;
+    border:1px solid #193653;
+    border-radius:22px;
     padding:30px;
-    border-radius:24px;
-    background:
-        rgba(255,255,255,.06);
-    border:
-        1px solid
-        rgba(255,255,255,.1);
+    box-shadow:0 20px 70px rgba(0,0,0,.45);
 }
 
 h1{
     margin-top:0;
+    font-size:28px;
+}
+
+.status{
+    padding:18px;
+    border-radius:15px;
+    background:#071522;
+    border:1px solid #193653;
+    margin-top:20px;
+}
+
+.green{
+    color:#57e389;
+}
+
+.yellow{
+    color:#ffd166;
+}
+
+.small{
+    color:#8ea4ba;
+    line-height:1.7;
 }
 
 .grid{
     display:grid;
-    grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(180px,1fr)
-        );
-    gap:15px;
-    margin-top:20px;
+    grid-template-columns:1fr 1fr;
+    gap:12px;
+    margin-top:18px;
 }
 
-.card{
-    padding:22px;
-    border-radius:18px;
-    background:
-        rgba(255,255,255,.06);
-    border:
-        1px solid
-        rgba(255,255,255,.08);
+.box{
+    background:#091827;
+    border:1px solid #193653;
+    padding:15px;
+    border-radius:13px;
 }
 
-.num{
-    font-size:30px;
+.value{
+    font-size:20px;
     font-weight:bold;
+    margin-top:5px;
 }
-
-.domain{
-    margin-top:20px;
-    padding:18px;
-    border-radius:15px;
-    background:#07101d;
-    word-break:break-all;
-}
-
-.bot{
-    margin-top:15px;
-    padding:20px;
-    border-radius:18px;
-    background:
-        rgba(255,255,255,.05);
-}
-
-.green{
-    color:#4ade80;
-}
-
 </style>
-
 </head>
 
 <body>
 
-<div class="container">
+<div class="card">
 
-<div class="header">
+<h1>🗜 Advanced ZIP Extractor</h1>
 
-<h1>
-🤖 VICKY BOT HOSTING
-</h1>
+<div class="status">
+
+<?php if ($job): ?>
+
+<div class="yellow">
+⚙️ EXTRACTION RUNNING
+</div>
 
 <p>
-Single-file Railway Telegram Bot Hosting
+File:
+<strong>
+<?=htmlspecialchars($job['filename'])?>
+</strong>
 </p>
+
+<p>
+Status:
+<strong>
+<?=htmlspecialchars($job['status'])?>
+</strong>
+</p>
+
+<p class="small">
+Started:
+<?=htmlspecialchars($job['started'])?>
+</p>
+
+<?php else: ?>
+
+<div class="green">
+🟢 EXTRACTOR READY
+</div>
+
+<p class="small">
+No extraction is currently running.
+</p>
+
+<?php endif; ?>
+
+</div>
 
 <div class="grid">
 
-<div class="card">
-Total Bots
-<div class="num">
-<?=count($bots)?>
+<div class="box">
+<div class="small">Free Storage</div>
+<div class="value">
+<?=formatBytes((float)$free)?>
 </div>
 </div>
 
-<div class="card">
-Running
-<div class="num green">
-<?php
-
-$running = 0;
-
-foreach($bots as $b){
-
-    if(
-        ($b['status'] ?? '') ===
-        'running'
-    ){
-        $running++;
-    }
-}
-
-echo $running;
-
-?>
+<div class="box">
+<div class="small">Total Storage</div>
+<div class="value">
+<?=formatBytes((float)$total)?>
 </div>
 </div>
 
-<div class="card">
-Stopped
-<div class="num">
-<?=count($bots)-$running?>
+<div class="box">
+<div class="small">Maximum Safety Extraction</div>
+<div class="value">1 TB</div>
 </div>
+
+<div class="box">
+<div class="small">Concurrent Jobs</div>
+<div class="value">1</div>
 </div>
 
 </div>
 
-<div class="domain">
-
-<b>Railway Domain</b>
-
-<br><br>
-
-<code>
-<?=htmlspecialchars(
-    RAILWAY_URL
-)?>
-</code>
-
-</div>
-
-<br>
-
-<b>Manager Webhook:</b>
-
-<br><br>
-
-<code>
-<?=htmlspecialchars(
-    RAILWAY_URL .
-    '/?manager=1'
-)?>
-</code>
-
-</div>
-
-<?php foreach($bots as $id=>$bot): ?>
-
-<div class="bot">
-
-<b>
-<?=htmlspecialchars(
-    $bot['username'] ??
-    'Unknown'
-)?>
-</b>
-
-<br><br>
-
-Bot ID:
-<code>
-<?=htmlspecialchars($id)?>
-</code>
-
-<br><br>
-
-Status:
-<span class="green">
-<?=htmlspecialchars(
-    $bot['status'] ??
-    'unknown'
-)?>
-</span>
-
-<br><br>
-
-Webhook:
-<br>
-
-<code>
-<?=htmlspecialchars(
-    botWebhook($id)
-)?>
-</code>
-
-</div>
-
-<?php endforeach; ?>
+<p class="small">
+Admin-only ZIP extraction system. Uploaded ZIP files are never executed;
+they are extracted as files only.
+</p>
 
 </div>
 
 </body>
 </html>
+<?php
