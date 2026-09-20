@@ -1,20 +1,35 @@
 <?php
+declare(strict_types=1);
+
 /*
 ==========================================================
- TeraBox Downloader Telegram Bot
- Single-file index.php
+ VICKY BOT HOST MANAGER
+ PHP Telegram Bot Hosting Panel
 ==========================================================
 
- REQUIRED:
- 1. PHP 8.1+
- 2. cURL enabled
- 3. ZipArchive enabled
- 4. Public HTTPS hosting
+ Supports:
+   - .php
+   - .py
+   - Admin only
+   - Upload
+   - Source analysis
+   - Token detection
+   - Admin ID detection
+   - Docker isolated deployment
+   - Start / Stop / Restart
+   - Delete
+   - Logs
+   - Daily 100 deployment limit
 
- YOU ONLY CHANGE:
- BOT TOKEN
- ADMIN ID
+ REQUIREMENTS:
+   PHP 8+
+   cURL
+   Docker installed
+   Docker CLI accessible by PHP user
+   Telegram webhook with HTTPS
 
+ IMPORTANT:
+ Never run uploaded code directly on the host.
 ==========================================================
 */
 
@@ -23,1803 +38,1587 @@
    CONFIG
 ======================================================== */
 
-$BOT_TOKEN = "7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nYqI";
+$BOT_TOKEN = '7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nYqI';
 
-/*
-   Multiple admin IDs supported:
+$ADMIN_ID = '8897821078';
 
-   $ADMIN_IDS = [
-       "123456789",
-       "987654321"
-   ];
-*/
-$ADMIN_IDS = [
-    "8897821078"
-];
+$MAX_DAILY_DEPLOYS = 100;
 
+$BASE_DIR = __DIR__;
 
-/* ========================================================
-   FREE TERABOX API
-======================================================== */
+$DATA_DIR = $BASE_DIR . '/data';
+$UPLOAD_DIR = $DATA_DIR . '/uploads';
+$BOT_DIR = $DATA_DIR . '/bots';
+$LOG_DIR = $DATA_DIR . '/logs';
 
-$TERABOX_API =
-    "https://luffy-api.is-dev.org/api/terafree?key=luffy&url=https://www.terabox.app/sharing/link?surl=V4h1HjREcOG-EbwzwsfPAw";
-
-
-/* ========================================================
-   STORAGE
-======================================================== */
-
-$BASE_DIR = __DIR__ . "/storage";
-
-$DOWNLOAD_DIR = $BASE_DIR . "/downloads";
-$EXTRACT_DIR  = $BASE_DIR . "/extracted";
-$JOB_DIR      = $BASE_DIR . "/jobs";
-
-
-foreach (
-    [
-        $BASE_DIR,
-        $DOWNLOAD_DIR,
-        $EXTRACT_DIR,
-        $JOB_DIR
-    ] as $dir
-) {
+foreach ([
+    $DATA_DIR,
+    $UPLOAD_DIR,
+    $BOT_DIR,
+    $LOG_DIR
+] as $dir) {
 
     if (!is_dir($dir)) {
-
-        @mkdir(
-            $dir,
-            0755,
-            true
-        );
+        mkdir($dir, 0755, true);
     }
+}
+
+$DB_FILE = $DATA_DIR . '/bots.json';
+$USAGE_FILE = $DATA_DIR . '/usage.json';
+
+
+/* ========================================================
+   DATABASE HELPERS
+======================================================== */
+
+function loadJson(string $file, array $default = []): array
+{
+    if (!file_exists($file)) {
+        return $default;
+    }
+
+    $data = json_decode(
+        file_get_contents($file),
+        true
+    );
+
+    return is_array($data)
+        ? $data
+        : $default;
+}
+
+
+function saveJson(string $file, array $data): void
+{
+    file_put_contents(
+        $file,
+        json_encode(
+            $data,
+            JSON_PRETTY_PRINT |
+            JSON_UNESCAPED_SLASHES
+        ),
+        LOCK_EX
+    );
 }
 
 
 /* ========================================================
-   TELEGRAM REQUEST
+   TELEGRAM API
 ======================================================== */
 
-function telegram(
-    string $method,
-    array $data = []
-): array {
-
+function telegram(string $method, array $data = []): array
+{
     global $BOT_TOKEN;
 
     $url =
-        "https://api.telegram.org/bot" .
-        $BOT_TOKEN .
-        "/" .
-        $method;
+        "https://api.telegram.org/bot"
+        . $BOT_TOKEN
+        . "/"
+        . $method;
 
-    $ch =
-        curl_init($url);
+    $ch = curl_init($url);
 
-    curl_setopt_array(
-        $ch,
-        [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $data,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 15,
-            CURLOPT_TIMEOUT => 60
-        ]
-    );
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $data,
+        CURLOPT_TIMEOUT => 60,
+    ]);
 
-    $response =
-        curl_exec($ch);
-
-    $error =
-        curl_error($ch);
+    $response = curl_exec($ch);
 
     curl_close($ch);
 
-    if ($response === false) {
+    $json = json_decode(
+        $response ?: '',
+        true
+    );
 
-        throw new Exception(
-            $error ?: "Telegram connection failed"
-        );
-    }
-
-    $json =
-        json_decode(
-            $response,
-            true
-        );
-
-    if (
-        !is_array($json) ||
-        empty($json["ok"])
-    ) {
-
-        throw new Exception(
-            $json["description"]
-            ?? "Telegram API error"
-        );
-    }
-
-    return $json;
+    return is_array($json)
+        ? $json
+        : [];
 }
 
-
-/* ========================================================
-   SEND MESSAGE
-======================================================== */
 
 function sendMessage(
-    $chatId,
+    string $chatId,
     string $text,
     ?array $keyboard = null
 ): void {
 
     $data = [
-
-        "chat_id" => $chatId,
-
-        "text" => $text,
-
-        "parse_mode" => "HTML",
-
-        "disable_web_page_preview" => true
-
+        'chat_id' => $chatId,
+        'text' => $text,
+        'parse_mode' => 'HTML'
     ];
 
-
     if ($keyboard !== null) {
-
-        $data["reply_markup"] =
-            json_encode(
-                [
-                    "inline_keyboard" =>
-                        $keyboard
-                ]
-            );
+        $data['reply_markup'] =
+            json_encode($keyboard);
     }
 
-
     telegram(
-        "sendMessage",
+        'sendMessage',
         $data
     );
 }
 
 
 /* ========================================================
-   EDIT MESSAGE
+   SECURITY
 ======================================================== */
 
-function editMessage(
-    $chatId,
-    $messageId,
-    string $text,
-    ?array $keyboard = null
-): void {
+function isAdmin($userId): bool
+{
+    global $ADMIN_ID;
 
-    $data = [
-
-        "chat_id" =>
-            $chatId,
-
-        "message_id" =>
-            $messageId,
-
-        "text" =>
-            $text,
-
-        "parse_mode" =>
-            "HTML",
-
-        "disable_web_page_preview" =>
-            true
-    ];
-
-
-    if ($keyboard !== null) {
-
-        $data["reply_markup"] =
-            json_encode(
-                [
-                    "inline_keyboard" =>
-                        $keyboard
-                ]
-            );
-    }
-
-
-    telegram(
-        "editMessageText",
-        $data
-    );
+    return (string)$userId ===
+        (string)$ADMIN_ID;
 }
 
 
 /* ========================================================
-   ADMIN CHECK
+   DAILY LIMIT
 ======================================================== */
 
-function isAdmin($userId): bool {
+function getUsage(): array
+{
+    global $USAGE_FILE;
 
-    global $ADMIN_IDS;
+    $today = date('Y-m-d');
 
-    return in_array(
-        (string)$userId,
-        array_map(
-            "strval",
-            $ADMIN_IDS
-        ),
-        true
+    $data = loadJson(
+        $USAGE_FILE,
+        [
+            'date' => $today,
+            'count' => 0
+        ]
     );
-}
 
+    if (($data['date'] ?? '') !== $today) {
 
-/* ========================================================
-   TERABOX URL CHECK
-======================================================== */
+        $data = [
+            'date' => $today,
+            'count' => 0
+        ];
 
-function isTeraBoxURL(
-    string $url
-): bool {
-
-    if (
-        !filter_var(
-            $url,
-            FILTER_VALIDATE_URL
-        )
-    ) {
-
-        return false;
-    }
-
-
-    $host =
-        strtolower(
-            (string)parse_url(
-                $url,
-                PHP_URL_HOST
-            )
+        saveJson(
+            $USAGE_FILE,
+            $data
         );
+    }
+
+    return $data;
+}
 
 
-    $allowed = [
+function canDeploy(): bool
+{
+    global $MAX_DAILY_DEPLOYS;
 
-        "terabox.com",
+    $usage = getUsage();
 
-        "www.terabox.com",
-
-        "teraboxapp.com",
-
-        "www.teraboxapp.com",
-
-        "1024terabox.com",
-
-        "www.1024terabox.com",
-
-        "terabox.link",
-
-        "www.terabox.link"
-
-    ];
+    return $usage['count'] <
+        $MAX_DAILY_DEPLOYS;
+}
 
 
-    return in_array(
-        $host,
-        $allowed,
-        true
+function consumeDeploy(): void
+{
+    global $USAGE_FILE;
+
+    $usage = getUsage();
+
+    $usage['count']++;
+
+    saveJson(
+        $USAGE_FILE,
+        $usage
     );
 }
 
 
 /* ========================================================
-   TERABOX API
+   SAFE BOT ID
 ======================================================== */
 
-function teraboxLookup(
-    string $url
+function generateBotId(): string
+{
+    return 'bot_' .
+        date('Ymd_His') .
+        '_' .
+        bin2hex(random_bytes(3));
+}
+
+
+/* ========================================================
+   FILE ANALYSIS
+======================================================== */
+
+function analyzeSource(
+    string $file
 ): array {
 
-    global $TERABOX_API;
+    $source = file_get_contents($file);
 
-
-    $apiURL =
-        $TERABOX_API .
-        "?url=" .
-        rawurlencode($url);
-
-
-    $ch =
-        curl_init(
-            $apiURL
+    $extension =
+        strtolower(
+            pathinfo(
+                $file,
+                PATHINFO_EXTENSION
+            )
         );
 
-
-    curl_setopt_array(
-        $ch,
-        [
-
-            CURLOPT_RETURNTRANSFER =>
-                true,
-
-            CURLOPT_FOLLOWLOCATION =>
-                true,
-
-            CURLOPT_CONNECTTIMEOUT =>
-                20,
-
-            CURLOPT_TIMEOUT =>
-                120,
-
-            CURLOPT_HTTPHEADER => [
-
-                "Accept: application/json",
-
-                "User-Agent: Mozilla/5.0"
-
-            ]
-
-        ]
-    );
+    $result = [
+        'language' => strtoupper($extension),
+        'token' => null,
+        'admin_id' => null,
+        'dependencies' => []
+    ];
 
 
-    $response =
-        curl_exec($ch);
+    /* Telegram token */
+
+    $patterns = [
+
+        '/\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/',
+
+        '/(?:BOT_TOKEN|TOKEN)\s*=\s*[\'"]([^\'"]+)[\'"]/i',
+
+        '/(?:bot_token|token)\s*=>\s*[\'"]([^\'"]+)[\'"]/i'
+    ];
 
 
-    $http =
-        curl_getinfo(
-            $ch,
-            CURLINFO_HTTP_CODE
-        );
+    foreach ($patterns as $pattern) {
 
+        if (preg_match(
+            $pattern,
+            $source,
+            $match
+        )) {
 
-    $error =
-        curl_error($ch);
+            $result['token'] =
+                $match[1] ??
+                $match[0];
 
-
-    curl_close($ch);
-
-
-    if (
-        $response === false
-    ) {
-
-        throw new Exception(
-            $error ?: "TeraBox API request failed"
-        );
+            break;
+        }
     }
 
 
-    $json =
-        json_decode(
-            $response,
-            true
-        );
+    /* Admin ID */
+
+    $adminPatterns = [
+
+        '/(?:ADMIN_ID|OWNER_ID)\s*=\s*[\'"]?(\d{5,15})/i',
+
+        '/(?:ADMIN_ID|OWNER_ID)\s*=>\s*[\'"]?(\d{5,15})/i'
+    ];
 
 
-    if (
-        $http < 200 ||
-        $http >= 300 ||
-        !is_array($json)
-    ) {
+    foreach ($adminPatterns as $pattern) {
 
-        throw new Exception(
-            "TeraBox API HTTP error: " .
-            $http
-        );
+        if (preg_match(
+            $pattern,
+            $source,
+            $match
+        )) {
+
+            $result['admin_id'] =
+                $match[1];
+
+            break;
+        }
     }
 
 
-    if (
-        empty($json["success"])
-    ) {
+    /* Python dependencies */
 
-        throw new Exception(
-            $json["error"]
-            ?? "Unable to resolve TeraBox link"
+    if ($extension === 'py') {
+
+        preg_match_all(
+            '/^\s*(?:import|from)\s+([A-Za-z0-9_.-]+)/m',
+            $source,
+            $matches
         );
+
+        $result['dependencies'] =
+            array_values(
+                array_unique(
+                    $matches[1] ?? []
+                )
+            );
     }
 
 
-    if (
-        empty($json["files"])
-    ) {
+    /* PHP dependencies */
 
-        throw new Exception(
-            "No files found in this TeraBox link"
-        );
+    if ($extension === 'php') {
+
+        if (
+            stripos(
+                $source,
+                'curl_init'
+            ) !== false
+        ) {
+
+            $result['dependencies'][] =
+                'PHP cURL';
+        }
+
+        if (
+            stripos(
+                $source,
+                'mysqli'
+            ) !== false
+        ) {
+
+            $result['dependencies'][] =
+                'MySQLi';
+        }
+
+        if (
+            stripos(
+                $source,
+                'PDO'
+            ) !== false
+        ) {
+
+            $result['dependencies'][] =
+                'PDO';
+        }
     }
 
 
-    return $json;
+    return $result;
 }
 
 
 /* ========================================================
-   SIZE FORMAT
+   MASK SECRET
 ======================================================== */
 
-function formatBytes(
-    $bytes
+function maskSecret(
+    ?string $secret
 ): string {
 
-    if (
-        !is_numeric($bytes)
-    ) {
-
-        return (string)$bytes;
+    if (!$secret) {
+        return 'Not detected';
     }
 
-
-    $bytes =
-        (float)$bytes;
-
-
-    if ($bytes < 1024) {
-
-        return
-            round($bytes, 2) .
-            " B";
+    if (strlen($secret) < 8) {
+        return '••••••••';
     }
-
-
-    if ($bytes < 1048576) {
-
-        return
-            round(
-                $bytes / 1024,
-                2
-            ) .
-            " KB";
-    }
-
-
-    if ($bytes < 1073741824) {
-
-        return
-            round(
-                $bytes / 1048576,
-                2
-            ) .
-            " MB";
-    }
-
 
     return
-        round(
-            $bytes / 1073741824,
-            2
-        ) .
-        " GB";
+        '••••••'
+        . substr(
+            $secret,
+            -6
+        );
 }
 
 
 /* ========================================================
-   JOB ID
+   DOCKER
 ======================================================== */
 
-function createJob(
-    array $data
-): string {
+function docker(string $command): array
+{
+    $output = [];
+    $code = 0;
 
-    global $JOB_DIR;
-
-    $id =
-        bin2hex(
-            random_bytes(16)
-        );
-
-
-    $data["_id"] =
-        $id;
-
-    $data["_created"] =
-        time();
-
-
-    file_put_contents(
-
-        $JOB_DIR .
-        "/" .
-        $id .
-        ".json",
-
-        json_encode(
-            $data,
-            JSON_PRETTY_PRINT |
-            JSON_UNESCAPED_SLASHES
-        ),
-
-        LOCK_EX
+    exec(
+        'docker ' .
+        $command .
+        ' 2>&1',
+        $output,
+        $code
     );
 
-
-    return $id;
-}
-
-
-/* ========================================================
-   LOAD JOB
-======================================================== */
-
-function loadJob(
-    string $id
-): ?array {
-
-    global $JOB_DIR;
-
-
-    if (
-        !preg_match(
-            '/^[a-f0-9]{32}$/',
-            $id
+    return [
+        'code' => $code,
+        'output' => implode(
+            "\n",
+            $output
         )
-    ) {
-
-        return null;
-    }
-
-
-    $file =
-        $JOB_DIR .
-        "/" .
-        $id .
-        ".json";
-
-
-    if (
-        !is_file($file)
-    ) {
-
-        return null;
-    }
-
-
-    $data =
-        json_decode(
-            file_get_contents($file),
-            true
-        );
-
-
-    return
-        is_array($data)
-        ? $data
-        : null;
+    ];
 }
 
 
 /* ========================================================
-   SAVE JOB
+   CREATE PYTHON DOCKERFILE
 ======================================================== */
 
-function saveJob(
-    string $id,
-    array $data
+function createPythonDockerfile(
+    string $dir
 ): void {
 
-    global $JOB_DIR;
+    $dockerfile = <<<DOCKER
+FROM python:3.12-slim
 
+WORKDIR /app
+
+COPY . /app
+
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+
+CMD ["python", "bot.py"]
+DOCKER;
 
     file_put_contents(
-
-        $JOB_DIR .
-        "/" .
-        $id .
-        ".json",
-
-        json_encode(
-            $data,
-            JSON_PRETTY_PRINT |
-            JSON_UNESCAPED_SLASHES
-        ),
-
-        LOCK_EX
+        $dir . '/Dockerfile',
+        $dockerfile
     );
 }
 
 
 /* ========================================================
-   SAFE FILENAME
+   CREATE PHP DOCKERFILE
 ======================================================== */
 
-function safeName(
-    string $name
-): string {
-
-    $name =
-        basename(
-            str_replace(
-                "\\",
-                "/",
-                $name
-            )
-        );
-
-
-    $name =
-        preg_replace(
-            '/[^\pL\pN._() \-]+/u',
-            "_",
-            $name
-        );
-
-
-    return
-        trim(
-            $name ?: "file",
-            ". "
-        );
-}
-
-
-/* ========================================================
-   DOWNLOAD FILE FROM URL
-======================================================== */
-
-function downloadRemoteFile(
-    string $url,
-    string $destination
+function createPhpDockerfile(
+    string $dir
 ): void {
 
-    $fp =
-        fopen(
-            $destination,
-            "wb"
-        );
+    $dockerfile = <<<DOCKER
+FROM php:8.3-cli
 
+WORKDIR /app
 
-    if (!$fp) {
+COPY . /app
 
-        throw new Exception(
-            "Cannot create destination file"
-        );
-    }
+CMD ["php", "bot.php"]
+DOCKER;
 
-
-    $ch =
-        curl_init(
-            $url
-        );
-
-
-    curl_setopt_array(
-        $ch,
-        [
-
-            CURLOPT_FILE =>
-                $fp,
-
-            CURLOPT_FOLLOWLOCATION =>
-                true,
-
-            CURLOPT_MAXREDIRS =>
-                10,
-
-            CURLOPT_CONNECTTIMEOUT =>
-                30,
-
-            CURLOPT_TIMEOUT =>
-                86400,
-
-            CURLOPT_USERAGENT =>
-                "Mozilla/5.0",
-
-            CURLOPT_HTTPHEADER => [
-
-                "Accept: */*"
-
-            ]
-
-        ]
-    );
-
-
-    $result =
-        curl_exec($ch);
-
-
-    $error =
-        curl_error($ch);
-
-
-    $http =
-        curl_getinfo(
-            $ch,
-            CURLINFO_HTTP_CODE
-        );
-
-
-    curl_close($ch);
-
-    fclose($fp);
-
-
-    if (
-        $result === false ||
-        $http < 200 ||
-        $http >= 400
-    ) {
-
-        @unlink(
-            $destination
-        );
-
-
-        throw new Exception(
-            "Download failed. HTTP " .
-            $http .
-            " " .
-            $error
-        );
-    }
-}
-
-
-/* ========================================================
-   ZIP EXTRACTION
-======================================================== */
-
-function extractZip(
-    string $zipFile,
-    string $destination
-): string {
-
-    if (
-        !class_exists(
-            "ZipArchive"
-        )
-    ) {
-
-        throw new Exception(
-            "ZipArchive PHP extension is required."
-        );
-    }
-
-
-    if (
-        !is_dir($destination)
-    ) {
-
-        mkdir(
-            $destination,
-            0755,
-            true
-        );
-    }
-
-
-    $zip =
-        new ZipArchive();
-
-
-    $result =
-        $zip->open(
-            $zipFile
-        );
-
-
-    if (
-        $result !== true
-    ) {
-
-        throw new Exception(
-            "Unable to open ZIP archive."
-        );
-    }
-
-
-    /*
-     * ZIP Slip protection
-     */
-
-    for (
-        $i = 0;
-        $i < $zip->numFiles;
-        $i++
-    ) {
-
-        $name =
-            $zip->getNameIndex(
-                $i
-            );
-
-
-        if (
-            $name === false
-        ) {
-
-            continue;
-        }
-
-
-        $name =
-            str_replace(
-                "\\",
-                "/",
-                $name
-            );
-
-
-        if (
-            str_starts_with(
-                $name,
-                "/"
-            ) ||
-            preg_match(
-                '#(^|/)\.\.(/|$)#',
-                $name
-            )
-        ) {
-
-            $zip->close();
-
-            throw new Exception(
-                "Unsafe ZIP path detected."
-            );
-        }
-    }
-
-
-    if (
-        !$zip->extractTo(
-            $destination
-        )
-    ) {
-
-        $zip->close();
-
-        throw new Exception(
-            "Extraction failed."
-        );
-    }
-
-
-    $zip->close();
-
-
-    return createIndexHTML(
-        $destination
+    file_put_contents(
+        $dir . '/Dockerfile',
+        $dockerfile
     );
 }
 
 
 /* ========================================================
-   INDEX.HTML
+   DEPLOY BOT
 ======================================================== */
 
-function createIndexHTML(
-    string $directory
-): string {
+function deployBot(
+    string $botId,
+    string $sourceDir,
+    string $language
+): array {
 
-    $files = [];
+    if ($language === 'PY') {
 
-
-    $iterator =
-        new RecursiveIteratorIterator(
-
-            new RecursiveDirectoryIterator(
-
-                $directory,
-
-                FilesystemIterator::SKIP_DOTS
-            )
+        createPythonDockerfile(
+            $sourceDir
         );
 
+        $image =
+            'vicky-bot-python:' .
+            $botId;
 
-    foreach (
-        $iterator as $file
-    ) {
+    } else {
 
-        if (
-            !$file->isFile()
-        ) {
+        createPhpDockerfile(
+            $sourceDir
+        );
 
-            continue;
-        }
-
-
-        $full =
-            $file->getPathname();
-
-
-        $relative =
-            ltrim(
-                str_replace(
-                    $directory,
-                    "",
-                    $full
-                ),
-                DIRECTORY_SEPARATOR
-            );
+        $image =
+            'vicky-bot-php:' .
+            $botId;
+    }
 
 
-        $files[] = [
+    /* Build image */
 
-            "name" =>
-                $relative,
+    $build = docker(
+        'build -t ' .
+        escapeshellarg($image) .
+        ' ' .
+        escapeshellarg($sourceDir)
+    );
 
-            "size" =>
-                $file->getSize()
 
+    if ($build['code'] !== 0) {
+
+        return [
+            'success' => false,
+            'error' =>
+                "Docker build failed:\n"
+                . $build['output']
         ];
     }
 
 
-    usort(
-        $files,
-        function (
-            $a,
-            $b
-        ) {
+    /* Start isolated container */
 
-            return strcmp(
-                $a["name"],
-                $b["name"]
-            );
-        }
+    $containerName =
+        'vicky_' .
+        $botId;
+
+
+    $run = docker(
+        'run -d ' .
+        '--name ' .
+        escapeshellarg(
+            $containerName
+        ) .
+        ' --restart unless-stopped ' .
+        '--memory=512m ' .
+        '--cpus=1 ' .
+        '--pids-limit=128 ' .
+        escapeshellarg($image)
     );
 
 
-    $html = <<<HTML
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
+    if ($run['code'] !== 0) {
 
-<meta
- name="viewport"
- content="width=device-width,initial-scale=1"
->
-
-<title>TeraBox Extracted Files</title>
-
-<style>
-
-body{
-    margin:0;
-    padding:30px;
-    background:#080d18;
-    color:#fff;
-    font-family:Arial,sans-serif;
-}
-
-.container{
-    max-width:1100px;
-    margin:auto;
-}
-
-h1{
-    margin-bottom:25px;
-}
-
-.file{
-    padding:15px;
-    margin:8px 0;
-    border:1px solid #263247;
-    border-radius:12px;
-    background:#111827;
-}
-
-a{
-    color:#61a8ff;
-    text-decoration:none;
-}
-
-.size{
-    color:#8d99aa;
-    font-size:13px;
-    margin-top:5px;
-}
-
-</style>
-
-</head>
-
-<body>
-
-<div class="container">
-
-<h1>📦 Extracted Files</h1>
-
-HTML;
-
-
-    foreach (
-        $files as $file
-    ) {
-
-        $name =
-            htmlspecialchars(
-                $file["name"],
-                ENT_QUOTES,
-                "UTF-8"
-            );
-
-
-        $url =
-            htmlspecialchars(
-                str_replace(
-                    DIRECTORY_SEPARATOR,
-                    "/",
-                    $file["name"]
-                ),
-                ENT_QUOTES,
-                "UTF-8"
-            );
-
-
-        $size =
-            formatBytes(
-                $file["size"]
-            );
-
-
-        $html .= <<<HTML
-
-<div class="file">
-
-<a href="$url" download>
-⬇️ $name
-</a>
-
-<div class="size">
-$size
-</div>
-
-</div>
-
-HTML;
+        return [
+            'success' => false,
+            'error' =>
+                "Container start failed:\n"
+                . $run['output']
+        ];
     }
 
 
-    $html .= <<<HTML
-
-</div>
-
-</body>
-</html>
-
-HTML;
+    $containerId =
+        trim($run['output']);
 
 
-    $index =
-        $directory .
-        "/index.html";
-
-
-    file_put_contents(
-        $index,
-        $html,
-        LOCK_EX
-    );
-
-
-    return $index;
+    return [
+        'success' => true,
+        'image' => $image,
+        'container' => $containerId,
+        'container_name' =>
+            $containerName
+    ];
 }
 
 
 /* ========================================================
-   TELEGRAM UPDATE
+   STOP
 ======================================================== */
 
-function processUpdate(
-    array $update
+function stopBot(
+    string $container
+): bool {
+
+    $result = docker(
+        'stop ' .
+        escapeshellarg($container)
+    );
+
+    return $result['code'] === 0;
+}
+
+
+/* ========================================================
+   START
+======================================================== */
+
+function startBot(
+    string $container
+): bool {
+
+    $result = docker(
+        'start ' .
+        escapeshellarg($container)
+    );
+
+    return $result['code'] === 0;
+}
+
+
+/* ========================================================
+   RESTART
+======================================================== */
+
+function restartBot(
+    string $container
+): bool {
+
+    $result = docker(
+        'restart ' .
+        escapeshellarg($container)
+    );
+
+    return $result['code'] === 0;
+}
+
+
+/* ========================================================
+   LOGS
+======================================================== */
+
+function getLogs(
+    string $container
+): string {
+
+    $result = docker(
+        'logs --tail 80 ' .
+        escapeshellarg($container)
+    );
+
+    return $result['output'];
+}
+
+
+/* ========================================================
+   DELETE
+======================================================== */
+
+function deleteBot(
+    string $container
 ): void {
 
-    /*
-     * NORMAL MESSAGE
-     */
-
-    if (
-        isset(
-            $update["message"]
-        )
-    ) {
-
-        $message =
-            $update["message"];
-
-
-        $chatId =
-            $message["chat"]["id"]
-            ?? null;
-
-
-        $userId =
-            $message["from"]["id"]
-            ?? null;
-
-
-        if (
-            $chatId === null ||
-            $userId === null
-        ) {
-
-            return;
-        }
-
-
-        /*
-         * ADMIN ONLY
-         */
-
-        if (
-            !isAdmin($userId)
-        ) {
-
-            sendMessage(
-
-                $chatId,
-
-                "⛔ <b>Access Denied</b>\n\n" .
-                "This bot is private and admin-only."
-
-            );
-
-            return;
-        }
-
-
-        $text =
-            trim(
-                (string)(
-                    $message["text"]
-                    ?? ""
-                )
-            );
-
-
-        /*
-         * START
-         */
-
-        if (
-            $text === "/start"
-        ) {
-
-            sendMessage(
-
-                $chatId,
-
-                "🚀 <b>TeraBox Downloader</b>\n\n" .
-                "Send a TeraBox share link."
-
-            );
-
-            return;
-        }
-
-
-        /*
-         * HELP
-         */
-
-        if (
-            $text === "/help"
-        ) {
-
-            sendMessage(
-
-                $chatId,
-
-                "📖 <b>How to use</b>\n\n" .
-                "1️⃣ Send TeraBox link\n" .
-                "2️⃣ Bot verifies it\n" .
-                "3️⃣ Filename + size appear\n" .
-                "4️⃣ Choose Download or Extract"
-
-            );
-
-            return;
-        }
-
-
-        /*
-         * TERABOX LINK
-         */
-
-        if (
-            isTeraBoxURL($text)
-        ) {
-
-            try {
-
-                sendMessage(
-                    $chatId,
-                    "🔎 <b>Verifying TeraBox link...</b>"
-                );
-
-
-                $data =
-                    teraboxLookup(
-                        $text
-                    );
-
-
-                /*
-                 * API can return multiple files.
-                 */
-
-                $files =
-                    $data["files"];
-
-
-                /*
-                 * Create one job containing
-                 * all resolved files.
-                 */
-
-                $jobId =
-                    createJob(
-
-                        [
-
-                            "chat_id" =>
-                                (string)$chatId,
-
-                            "source_url" =>
-                                $text,
-
-                            "files" =>
-                                $files,
-
-                            "status" =>
-                                "verified"
-
-                        ]
-
-                    );
-
-
-                /*
-                 * Display first file.
-                 */
-
-                $first =
-                    $files[0];
-
-
-                $filename =
-                    safeName(
-                        (string)(
-                            $first["file_name"]
-                            ?? "Unknown"
-                        )
-                    );
-
-
-                $size =
-                    (string)(
-                        $first["size"]
-                        ?? "Unknown"
-                    );
-
-
-                $count =
-                    count(
-                        $files
-                    );
-
-
-                $message =
-
-                    "✅ <b>TeraBox Verified</b>\n\n" .
-
-                    "📄 <b>File:</b> " .
-                    htmlspecialchars(
-                        $filename
-                    ) .
-                    "\n" .
-
-                    "📦 <b>Size:</b> " .
-                    htmlspecialchars(
-                        $size
-                    ) .
-                    "\n" .
-
-                    "📁 <b>Items:</b> " .
-                    $count .
-                    "\n\n" .
-
-                    "Choose an action:";
-
-
-                sendMessage(
-
-                    $chatId,
-
-                    $message,
-
-                    [
-
-                        [
-
-                            [
-
-                                "text" =>
-                                    "⬇️ Download",
-
-                                "callback_data" =>
-                                    "download:" .
-                                    $jobId
-
-                            ],
-
-                            [
-
-                                "text" =>
-                                    "📦 Extract",
-
-                                "callback_data" =>
-                                    "extract:" .
-                                    $jobId
-
-                            ]
-
-                        ]
-
-                    ]
-
-                );
-
-            }
-
-            catch (
-                Throwable $e
-            ) {
-
-                sendMessage(
-
-                    $chatId,
-
-                    "❌ <b>TeraBox verification failed</b>\n\n" .
-                    htmlspecialchars(
-                        $e->getMessage()
-                    )
-
-                );
-            }
-
-
-            return;
-        }
-
-
-        sendMessage(
-
-            $chatId,
-
-            "⚠️ Send a valid TeraBox share link."
-
-        );
-
-        return;
-    }
-
-
-    /*
-     * BUTTON PRESS
-     */
-
-    if (
-        isset(
-            $update["callback_query"]
-        )
-    ) {
-
-        $query =
-            $update["callback_query"];
-
-
-        $userId =
-            $query["from"]["id"]
-            ?? null;
-
-
-        $chatId =
-            $query["message"]["chat"]["id"]
-            ?? null;
-
-
-        $messageId =
-            $query["message"]["message_id"]
-            ?? null;
-
-
-        $data =
-            (string)(
-                $query["data"]
-                ?? ""
-            );
-
-
-        if (
-            $userId === null ||
-            $chatId === null ||
-            $messageId === null
-        ) {
-
-            return;
-        }
-
-
-        if (
-            !isAdmin($userId)
-        ) {
-
-            telegram(
-
-                "answerCallbackQuery",
-
-                [
-
-                    "callback_query_id" =>
-                        $query["id"],
-
-                    "text" =>
-                        "Access denied.",
-
-                    "show_alert" =>
-                        true
-
-                ]
-
-            );
-
-            return;
-        }
-
-
-        telegram(
-
-            "answerCallbackQuery",
-
-            [
-
-                "callback_query_id" =>
-                    $query["id"],
-
-                "text" =>
-                    "Processing..."
-
-            ]
-
-        );
-
-
-        $parts =
-            explode(
-                ":",
-                $data,
-                2
-            );
-
-
-        $action =
-            $parts[0]
-            ?? "";
-
-
-        $jobId =
-            $parts[1]
-            ?? "";
-
-
-        $job =
-            loadJob(
-                $jobId
-            );
-
-
-        if (
-            !$job
-        ) {
-
-            editMessage(
-
-                $chatId,
-
-                $messageId,
-
-                "❌ <b>Job expired or not found.</b>"
-
-            );
-
-            return;
-        }
-
-
-        /*
-         * DOWNLOAD
-         */
-
-        if (
-            $action === "download"
-        ) {
-
-            $files =
-                $job["files"]
-                ?? [];
-
-
-            if (
-                empty($files)
-            ) {
-
-                sendMessage(
-                    $chatId,
-                    "❌ No downloadable file found."
-                );
-
-                return;
-            }
-
-
-            /*
-             * Telegram itself cannot act as a
-             * 500GB storage/download server.
-             *
-             * We provide the resolved download
-             * links from the free API.
-             */
-
-            $buttons = [];
-
-
-            foreach (
-                $files as $index => $file
-            ) {
-
-                $name =
-                    safeName(
-                        (string)(
-                            $file["file_name"]
-                            ?? "File " .
-                            ($index + 1)
-                        )
-                    );
-
-
-                $url =
-                    (string)(
-                        $file["download_url"]
-                        ?? ""
-                    );
-
-
-                if (
-                    $url === ""
-                ) {
-
-                    continue;
-                }
-
-
-                /*
-                 * Telegram button text
-                 * must stay reasonably short.
-                 */
-
-                $label =
-                    "⬇️ " .
-                    mb_substr(
-                        $name,
-                        0,
-                        35
-                    );
-
-
-                $buttons[] = [
-
-                    [
-
-                        "text" =>
-                            $label,
-
-                        "url" =>
-                            $url
-
-                    ]
-
-                ];
-            }
-
-
-            if (
-                empty($buttons)
-            ) {
-
-                sendMessage(
-                    $chatId,
-                    "❌ Download URL unavailable."
-                );
-
-                return;
-            }
-
-
-            editMessage(
-
-                $chatId,
-
-                $messageId,
-
-                "⬇️ <b>Download Ready</b>\n\n" .
-                "Tap a file below:",
-
-                $buttons
-
-            );
-
-
-            return;
-        }
-
-
-        /*
-         * EXTRACT
-         */
-
-        if (
-            $action === "extract"
-        ) {
-
-            $files =
-                $job["files"]
-                ?? [];
-
-
-            if (
-                empty($files)
-            ) {
-
-                sendMessage(
-                    $chatId,
-                    "❌ No file available for extraction."
-                );
-
-                return;
-            }
-
-
-            /*
-             * Extraction requires the hosting server
-             * to download the archive first.
-             *
-             * It is NOT safe to run a huge 500GB
-             * extraction inside Telegram webhook.
-             */
-
-            editMessage(
-
-                $chatId,
-
-                $messageId,
-
-                "📦 <b>Extraction Request Created</b>\n\n" .
-                "The archive must first be transferred to the server.\n\n" .
-                "⚠️ Extraction speed depends on server bandwidth, disk I/O, " .
-                "archive compression and available storage."
-
-            );
-
-
-            /*
-             * Store extraction request.
-             *
-             * A cron/worker can process:
-             *
-             * status = extract_queued
-             */
-
-            $job["status"] =
-                "extract_queued";
-
-
-            $job["extract_requested"] =
-                time();
-
-
-            saveJob(
-                $jobId,
-                $job
-            );
-
-
-            return;
-        }
-    }
+    docker(
+        'rm -f ' .
+        escapeshellarg($container)
+    );
 }
 
 
 /* ========================================================
-   WEBHOOK ENTRY
+   KEYBOARD
 ======================================================== */
 
-if (
-    $_SERVER["REQUEST_METHOD"]
-    === "POST"
-) {
-
-    $raw =
-        file_get_contents(
-            "php://input"
-        );
-
-
-    $update =
-        json_decode(
-            $raw ?: "",
-            true
-        );
-
-
-    if (
-        !is_array($update)
-    ) {
-
-        http_response_code(400);
-
-        echo "Invalid update.";
-
-        exit;
-    }
-
-
-    try {
-
-        processUpdate(
-            $update
-        );
-
-
-        header(
-            "Content-Type: application/json"
-        );
-
-
-        echo json_encode(
-            [
-                "ok" => true
-            ]
-        );
-
-    }
-
-    catch (
-        Throwable $e
-    ) {
-
-        http_response_code(500);
-
-        echo json_encode(
+function mainKeyboard(): array
+{
+    return [
+        'inline_keyboard' => [
 
             [
 
-                "ok" =>
-                    false,
+                [
+                    'text' => '📤 Upload Bot',
+                    'callback_data' =>
+                        'upload'
+                ]
 
-                "error" =>
-                    $e->getMessage()
+            ],
+
+            [
+
+                [
+                    'text' => '🤖 My Bots',
+                    'callback_data' =>
+                        'bots'
+                ],
+
+                [
+                    'text' => '📊 Usage',
+                    'callback_data' =>
+                        'usage'
+                ]
 
             ]
 
-        );
-    }
+        ]
+    ];
+}
 
+
+/* ========================================================
+   WEBHOOK UPDATE
+======================================================== */
+
+$updateRaw =
+    file_get_contents(
+        'php://input'
+    );
+
+if (!$updateRaw) {
+
+    /*
+     Browser access = health page
+    */
+
+    header(
+        'Content-Type: text/plain'
+    );
+
+    echo
+        "Vicky Bot Hosting Manager is running\n";
 
     exit;
 }
 
 
+$update =
+    json_decode(
+        $updateRaw,
+        true
+    );
+
+
+if (!is_array($update)) {
+    exit;
+}
+
+
 /* ========================================================
-   HEALTH CHECK
+   CALLBACK QUERY
 ======================================================== */
 
-header(
-    "Content-Type: text/plain; charset=utf-8"
-);
+if (isset(
+    $update['callback_query']
+)) {
 
-echo
-"TeraBox Downloader Bot is online.\n";
+    $callback =
+        $update['callback_query'];
+
+    $fromId =
+        $callback['from']['id'] ??
+        null;
+
+    $chatId =
+        $callback['message']['chat']['id'] ??
+        null;
+
+    $action =
+        $callback['data'] ??
+        '';
+
+
+    if (!isAdmin($fromId)) {
+
+        telegram(
+            'answerCallbackQuery',
+            [
+                'callback_query_id' =>
+                    $callback['id'],
+                'text' =>
+                    'Access denied',
+                'show_alert' => true
+            ]
+        );
+
+        exit;
+    }
+
+
+    telegram(
+        'answerCallbackQuery',
+        [
+            'callback_query_id' =>
+                $callback['id']
+        ]
+    );
+
+
+    /* Upload */
+
+    if ($action === 'upload') {
+
+        sendMessage(
+            (string)$chatId,
+            "📤 <b>Upload Bot</b>\n\n"
+            . "Send a <code>.php</code> or "
+            . "<code>.py</code> file.\n\n"
+            . "The system will analyze it before deployment."
+        );
+
+        exit;
+    }
+
+
+    /* Usage */
+
+    if ($action === 'usage') {
+
+        $usage = getUsage();
+
+        sendMessage(
+            (string)$chatId,
+            "📊 <b>Daily Hosting Usage</b>\n\n"
+            . "Deployments: <b>"
+            . $usage['count']
+            . "/"
+            . $MAX_DAILY_DEPLOYS
+            . "</b>"
+        );
+
+        exit;
+    }
+
+
+    /* Bots */
+
+    if ($action === 'bots') {
+
+        $bots =
+            loadJson(
+                $DB_FILE
+            );
+
+        if (!$bots) {
+
+            sendMessage(
+                (string)$chatId,
+                "🤖 No bots deployed."
+            );
+
+            exit;
+        }
+
+
+        foreach ($bots as $id => $bot) {
+
+            $status =
+                docker(
+                    'inspect -f "{{.State.Status}}" '
+                    . escapeshellarg(
+                        $bot['container']
+                    )
+                );
+
+            $state =
+                trim(
+                    $status['output']
+                );
+
+            $keyboard = [
+                'inline_keyboard' => [
+
+                    [
+
+                        [
+                            'text' => '▶️ Start',
+                            'callback_data' =>
+                                'start:' . $id
+                        ],
+
+                        [
+                            'text' => '⏹ Stop',
+                            'callback_data' =>
+                                'stop:' . $id
+                        ]
+
+                    ],
+
+                    [
+
+                        [
+                            'text' => '🔄 Restart',
+                            'callback_data' =>
+                                'restart:' . $id
+                        ],
+
+                        [
+                            'text' => '📜 Logs',
+                            'callback_data' =>
+                                'logs:' . $id
+                        ]
+
+                    ],
+
+                    [
+
+                        [
+                            'text' => '🗑 Delete',
+                            'callback_data' =>
+                                'delete:' . $id
+                        ]
+
+                    ]
+
+                ]
+            ];
+
+
+            sendMessage(
+                (string)$chatId,
+
+                "🤖 <b>"
+                . htmlspecialchars(
+                    $bot['name']
+                )
+                . "</b>\n\n"
+
+                . "ID: <code>"
+                . $id
+                . "</code>\n"
+
+                . "Language: <b>"
+                . $bot['language']
+                . "</b>\n"
+
+                . "Status: <b>"
+                . htmlspecialchars($state)
+                . "</b>\n"
+
+                . "Token: <code>"
+                . maskSecret(
+                    $bot['token'] ?? null
+                )
+                . "</code>",
+
+                $keyboard
+            );
+        }
+
+        exit;
+    }
+
+
+    /* Bot actions */
+
+    if (preg_match(
+        '/^(start|stop|restart|logs|delete):(.+)$/',
+        $action,
+        $match
+    )) {
+
+        $command =
+            $match[1];
+
+        $botId =
+            $match[2];
+
+        $bots =
+            loadJson(
+                $DB_FILE
+            );
+
+
+        if (!isset(
+            $bots[$botId]
+        )) {
+
+            sendMessage(
+                (string)$chatId,
+                "❌ Bot not found."
+            );
+
+            exit;
+        }
+
+
+        $container =
+            $bots[$botId]['container'];
+
+
+        if ($command === 'start') {
+
+            startBot(
+                $container
+            );
+
+            sendMessage(
+                (string)$chatId,
+                "▶️ Bot started."
+            );
+        }
+
+
+        if ($command === 'stop') {
+
+            stopBot(
+                $container
+            );
+
+            sendMessage(
+                (string)$chatId,
+                "⏹ Bot stopped."
+            );
+        }
+
+
+        if ($command === 'restart') {
+
+            restartBot(
+                $container
+            );
+
+            sendMessage(
+                (string)$chatId,
+                "🔄 Bot restarted."
+            );
+        }
+
+
+        if ($command === 'logs') {
+
+            $logs =
+                getLogs(
+                    $container
+                );
+
+            if ($logs === '') {
+                $logs = 'No logs available.';
+            }
+
+            if (strlen($logs) > 3500) {
+
+                $logs =
+                    substr(
+                        $logs,
+                        -3500
+                    );
+            }
+
+            sendMessage(
+                (string)$chatId,
+                "📜 <b>Bot Logs</b>\n\n"
+                . "<pre>"
+                . htmlspecialchars(
+                    $logs
+                )
+                . "</pre>"
+            );
+        }
+
+
+        if ($command === 'delete') {
+
+            deleteBot(
+                $container
+            );
+
+            unset(
+                $bots[$botId]
+            );
+
+            saveJson(
+                $DB_FILE,
+                $bots
+            );
+
+            sendMessage(
+                (string)$chatId,
+                "🗑 Bot deleted."
+            );
+        }
+
+        exit;
+    }
+}
+
+
+/* ========================================================
+   MESSAGE
+======================================================== */
+
+if (isset(
+    $update['message']
+)) {
+
+    $message =
+        $update['message'];
+
+    $chatId =
+        $message['chat']['id'] ??
+        null;
+
+    $userId =
+        $message['from']['id'] ??
+        null;
+
+    if (!isAdmin($userId)) {
+
+        if ($chatId !== null) {
+
+            sendMessage(
+                (string)$chatId,
+                "⛔ <b>Admin access only.</b>"
+            );
+        }
+
+        exit;
+    }
+
+
+    /* START */
+
+    if (
+        isset(
+            $message['text']
+        )
+        &&
+        trim(
+            $message['text']
+        ) === '/start'
+    ) {
+
+        $usage =
+            getUsage();
+
+        sendMessage(
+            (string)$chatId,
+
+            "🚀 <b>VICKY BOT HOST MANAGER</b>\n\n"
+            . "📤 Upload PHP/Python Telegram bots\n"
+            . "🔍 Automatic source analysis\n"
+            . "🔐 Token/Admin detection\n"
+            . "🐳 Docker isolated hosting\n"
+            . "▶️ Start / Stop / Restart\n"
+            . "📜 Live logs\n"
+            . "🗑 Delete bots\n\n"
+            . "📊 Today: <b>"
+            . $usage['count']
+            . "/"
+            . $MAX_DAILY_DEPLOYS
+            . "</b>",
+
+            mainKeyboard()
+        );
+
+        exit;
+    }
+
+
+    /* DOCUMENT */
+
+    if (
+        isset(
+            $message['document']
+        )
+    ) {
+
+        $document =
+            $message['document'];
+
+        $filename =
+            $document['file_name'] ??
+            '';
+
+
+        if (
+            !preg_match(
+                '/\.(php|py)$/i',
+                $filename
+            )
+        ) {
+
+            sendMessage(
+                (string)$chatId,
+                "❌ Only <b>.php</b> and <b>.py</b> files are supported."
+            );
+
+            exit;
+        }
+
+
+        if (!canDeploy()) {
+
+            sendMessage(
+                (string)$chatId,
+                "⛔ Daily deployment limit reached.\n\n"
+                . "Limit: <b>"
+                . $MAX_DAILY_DEPLOYS
+                . "</b> bots/day."
+            );
+
+            exit;
+        }
+
+
+        sendMessage(
+            (string)$chatId,
+            "🔍 <b>Reading uploaded bot...</b>\n\n"
+            . "Checking source, token, admin ID and dependencies..."
+        );
+
+
+        $fileId =
+            $document['file_id'];
+
+
+        $fileResponse =
+            telegram(
+                'getFile',
+                [
+                    'file_id' =>
+                        $fileId
+                ]
+            );
+
+
+        if (
+            !isset(
+                $fileResponse['result']['file_path']
+            )
+        ) {
+
+            sendMessage(
+                (string)$chatId,
+                "❌ Could not download uploaded file."
+            );
+
+            exit;
+        }
+
+
+        $remotePath =
+            $fileResponse['result']['file_path'];
+
+
+        $downloadUrl =
+            "https://api.telegram.org/file/bot"
+            . $BOT_TOKEN
+            . "/"
+            . $remotePath;
+
+
+        $botId =
+            generateBotId();
+
+
+        $botDir =
+            $BOT_DIR . '/' . $botId;
+
+
+        mkdir(
+            $botDir,
+            0755,
+            true
+        );
+
+
+        $localFile =
+            $botDir . '/' . basename(
+                $filename
+            );
+
+
+        $content =
+            file_get_contents(
+                $downloadUrl
+            );
+
+
+        if ($content === false) {
+
+            sendMessage(
+                (string)$chatId,
+                "❌ File download failed."
+            );
+
+            exit;
+        }
+
+
+        file_put_contents(
+            $localFile,
+            $content
+        );
+
+
+        /* Analyze */
+
+        try {
+
+            $analysis =
+                analyzeSource(
+                    $localFile
+                );
+
+        } catch (
+            Throwable $e
+        ) {
+
+            sendMessage(
+                (string)$chatId,
+                "❌ Analysis failed:\n"
+                . htmlspecialchars(
+                    $e->getMessage()
+                )
+            );
+
+            exit;
+        }
+
+
+        $language =
+            $analysis['language'];
+
+
+        $token =
+            $analysis['token'];
+
+
+        $detectedAdmin =
+            $analysis['admin_id'];
+
+
+        $dependencies =
+            $analysis['dependencies'];
+
+
+        $dependencyText =
+            $dependencies
+            ? implode(
+                ', ',
+                $dependencies
+            )
+            : 'None detected';
+
+
+        /* Store bot */
+
+        $bots =
+            loadJson(
+                $DB_FILE
+            );
+
+
+        $bots[$botId] = [
+
+            'name' =>
+                $filename,
+
+            'language' =>
+                $language,
+
+            'token' =>
+                $token,
+
+            'admin_id' =>
+                $detectedAdmin,
+
+            'dependencies' =>
+                $dependencies,
+
+            'container' =>
+                '',
+
+            'created_at' =>
+                date('c'),
+
+            'status' =>
+                'analyzed'
+
+        ];
+
+
+        saveJson(
+            $DB_FILE,
+            $bots
+        );
+
+
+        $keyboard = [
+            'inline_keyboard' => [
+
+                [
+
+                    [
+                        'text' =>
+                            '🚀 Deploy Bot',
+                        'callback_data' =>
+                            'deploy:' . $botId
+                    ]
+
+                ]
+
+            ]
+        ];
+
+
+        sendMessage(
+            (string)$chatId,
+
+            "✅ <b>Bot Analysis Complete</b>\n\n"
+
+            . "📄 File: <code>"
+            . htmlspecialchars(
+                $filename
+            )
+            . "</code>\n"
+
+            . "💻 Language: <b>"
+            . $language
+            . "</b>\n"
+
+            . "🔐 Token: <code>"
+            . maskSecret(
+                $token
+            )
+            . "</code>\n"
+
+            . "👤 Admin ID: <code>"
+            . (
+                $detectedAdmin
+                ?: 'Not detected'
+            )
+            . "</code>\n"
+
+            . "📦 Dependencies: <code>"
+            . htmlspecialchars(
+                $dependencyText
+            )
+            . "</code>\n\n"
+
+            . "Bot is ready for deployment.",
+
+            $keyboard
+        );
+
+        exit;
+    }
+}
+
+
+/* ========================================================
+   DEPLOY CALLBACK
+======================================================== */
+
+if (
+    isset(
+        $update['callback_query']['data']
+    )
+    &&
+    str_starts_with(
+        $update['callback_query']['data'],
+        'deploy:'
+    )
+) {
+
+    $callback =
+        $update['callback_query'];
+
+    $userId =
+        $callback['from']['id'];
+
+    $chatId =
+        $callback['message']['chat']['id'];
+
+    if (!isAdmin($userId)) {
+        exit;
+    }
+
+
+    $botId =
+        substr(
+            $callback['data'],
+            7
+        );
+
+
+    $bots =
+        loadJson(
+            $DB_FILE
+        );
+
+
+    if (!isset(
+        $bots[$botId]
+    )) {
+
+        sendMessage(
+            (string)$chatId,
+            "❌ Bot not found."
+        );
+
+        exit;
+    }
+
+
+    if (!canDeploy()) {
+
+        sendMessage(
+            (string)$chatId,
+            "⛔ Daily deployment limit reached."
+        );
+
+        exit;
+    }
+
+
+    sendMessage(
+        (string)$chatId,
+        "🚀 <b>Deploying bot...</b>\n\n"
+        . "Creating isolated Docker environment.\n"
+        . "Installing dependencies.\n"
+        . "Starting runtime..."
+    );
+
+
+    $bot =
+        $bots[$botId];
+
+
+    $sourceDir =
+        $BOT_DIR . '/' . $botId;
+
+
+    $result =
+        deployBot(
+            $botId,
+            $sourceDir,
+            $bot['language']
+        );
+
+
+    if (!$result['success']) {
+
+        $bots[$botId]['status'] =
+            'failed';
+
+        saveJson(
+            $DB_FILE,
+            $bots
+        );
+
+        sendMessage(
+            (string)$chatId,
+            "❌ <b>Deployment failed</b>\n\n"
+            . "<pre>"
+            . htmlspecialchars(
+                $result['error']
+            )
+            . "</pre>"
+        );
+
+        exit;
+    }
+
+
+    $bots[$botId]['container'] =
+        $result['container_name'];
+
+    $bots[$botId]['status'] =
+        'running';
+
+    $bots[$botId]['deployed_at'] =
+        date('c');
+
+
+    saveJson(
+        $DB_FILE,
+        $bots
+    );
+
+
+    consumeDeploy();
+
+
+    sendMessage(
+        (string)$chatId,
+
+        "🟢 <b>BOT LIVE</b>\n\n"
+
+        . "🤖 <b>"
+        . htmlspecialchars(
+            $bot['name']
+        )
+        . "</b>\n"
+
+        . "🆔 <code>"
+        . $botId
+        . "</code>\n"
+
+        . "💻 "
+        . $bot['language']
+        . "\n"
+
+        . "🐳 Docker: <b>Running</b>\n\n"
+
+        . "The bot is now hosted."
+    );
+
+    exit;
+}
+?>
