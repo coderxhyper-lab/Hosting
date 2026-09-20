@@ -2,50 +2,39 @@
 declare(strict_types=1);
 
 /*
-============================================================
- VICKY RAILWAY BOT HOSTER
-============================================================
+===========================================================
+ VICKY BOT HOSTING MANAGER
+ Existing Railway service version
+===========================================================
 
-Flow:
+IMPORTANT:
+No new Railway project is created.
 
-Admin uploads .php / .py
-        ↓
-Read source
-        ↓
-Detect Telegram BOT TOKEN
-Detect ADMIN ID
-        ↓
+Everything runs on the CURRENT Railway service:
+
+https://bot-hosting-production-7668.up.railway.app
+
+Architecture:
+
+Telegram Manager
+      ↓
+Upload PHP/PY
+      ↓
+Analyse source
+      ↓
+Detect token/admin
+      ↓
 Telegram getMe()
-        ↓
-Show real bot username
-        ↓
-VERIFY button
-        ↓
-Create Railway project
-        ↓
-Set environment variables
-        ↓
-Deploy
-        ↓
-Generate Railway domain
-        ↓
-Set Telegram webhook
-        ↓
-LIVE
-
-Requirements on the SERVER:
-
-PHP 8+
-cURL
-shell_exec / exec
-Railway CLI installed
-Railway authenticated
-
-Railway automation:
-RAILWAY_API_TOKEN must be configured
-on the hosting server environment.
-
-============================================================
+      ↓
+VERIFY
+      ↓
+Create /app/hosted/BOT_ID
+      ↓
+Start bot process
+      ↓
+Webhook:
+https://bot-hosting-production-7668.up.railway.app/b/BOT_ID
+===========================================================
 */
 
 
@@ -53,115 +42,76 @@ on the hosting server environment.
    CONFIG
 ========================================================= */
 
-$MANAGER_BOT_TOKEN =
+const MANAGER_BOT_TOKEN =
     '7832316573:AAHuDnlgw1pUSFnWFrxe5flPpoKlBJ7nYqI';
 
-$ADMIN_ID =
+const ADMIN_ID =
     '8897821078';
 
-/*
- * DO NOT put Railway token in Telegram source.
- *
- * Set it on the server:
- *
- * export RAILWAY_API_TOKEN="YOUR_RAILWAY_TOKEN"
- *
- * or configure it in hosting environment variables.
- */
+const BASE_DOMAIN =
+    'https://bot-hosting-production-7668.up.railway.app';
 
-$RAILWAY_TOKEN =
-    getenv('RAILWAY_API_TOKEN');
+const HOST_ROOT =
+    '/app/hosted';
 
-if (!$RAILWAY_TOKEN) {
+const DATA_ROOT =
+    '/app/data';
 
-    /*
-     * Manager can still start,
-     * but deployment will be blocked.
-     */
+const DB_FILE =
+    '/app/data/bots.json';
 
-    $RAILWAY_TOKEN = '';
-}
+const DAILY_LIMIT =
+    100;
 
 
 /* =========================================================
-   PATHS
+   INIT
 ========================================================= */
 
-$BASE =
-    __DIR__;
-
-$DATA =
-    $BASE . '/data';
-
-$UPLOADS =
-    $DATA . '/uploads';
-
-$PROJECTS =
-    $DATA . '/projects';
-
-$DB =
-    $DATA . '/bots.json';
-
-$USAGE =
-    $DATA . '/usage.json';
-
-
 foreach ([
-    $DATA,
-    $UPLOADS,
-    $PROJECTS
+    HOST_ROOT,
+    DATA_ROOT
 ] as $dir) {
 
     if (!is_dir($dir)) {
-
-        mkdir(
-            $dir,
-            0755,
-            true
-        );
+        @mkdir($dir, 0755, true);
     }
 }
 
 
+if (!file_exists(DB_FILE)) {
+
+    file_put_contents(
+        DB_FILE,
+        json_encode(
+            [],
+            JSON_PRETTY_PRINT
+        )
+    );
+}
+
+
 /* =========================================================
-   LIMIT
+   JSON DATABASE
 ========================================================= */
 
-$DAILY_LIMIT = 100;
-
-
-/* =========================================================
-   JSON
-========================================================= */
-
-function readJson(
-    string $file,
-    array $default = []
-): array {
-
-    if (!file_exists($file)) {
-        return $default;
-    }
-
-    $data =
-        json_decode(
-            file_get_contents($file),
-            true
-        );
+function db(): array
+{
+    $data = json_decode(
+        @file_get_contents(DB_FILE),
+        true
+    );
 
     return is_array($data)
         ? $data
-        : $default;
+        : [];
 }
 
 
-function writeJson(
-    string $file,
-    array $data
-): void {
-
+function saveDb(array $data): void
+{
     file_put_contents(
-        $file,
+        DB_FILE,
         json_encode(
             $data,
             JSON_PRETTY_PRINT |
@@ -176,28 +126,25 @@ function writeJson(
    TELEGRAM API
 ========================================================= */
 
-function tg(
+function telegram(
     string $method,
-    array $data = []
+    array $params = []
 ): array {
-
-    global $MANAGER_BOT_TOKEN;
 
     $url =
         'https://api.telegram.org/bot'
-        . $MANAGER_BOT_TOKEN
+        . MANAGER_BOT_TOKEN
         . '/'
         . $method;
 
-    $ch =
-        curl_init($url);
+    $ch = curl_init($url);
 
     curl_setopt_array(
         $ch,
         [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $data,
+            CURLOPT_POSTFIELDS => $params,
             CURLOPT_CONNECTTIMEOUT => 15,
             CURLOPT_TIMEOUT => 60
         ]
@@ -220,29 +167,29 @@ function tg(
 }
 
 
-function send(
-    string $chat,
+function sendMessage(
+    $chatId,
     string $text,
     ?array $keyboard = null
 ): void {
 
-    $data = [
-        'chat_id' => $chat,
+    $params = [
+        'chat_id' => $chatId,
         'text' => $text,
         'parse_mode' => 'HTML'
     ];
 
     if ($keyboard !== null) {
 
-        $data['reply_markup'] =
+        $params['reply_markup'] =
             json_encode(
                 $keyboard
             );
     }
 
-    tg(
+    telegram(
         'sendMessage',
-        $data
+        $params
     );
 }
 
@@ -251,157 +198,26 @@ function send(
    ADMIN
 ========================================================= */
 
-function admin(
-    $id
-): bool {
+function isAdmin($id): bool
+{
+    return (string)$id ===
+        (string)ADMIN_ID;
+}
 
-    global $ADMIN_ID;
 
+/* =========================================================
+   SAFE ID
+========================================================= */
+
+function botId(): string
+{
     return
-        (string)$id ===
-        (string)$ADMIN_ID;
-}
-
-
-/* =========================================================
-   DAILY USAGE
-========================================================= */
-
-function usage(): array {
-
-    global $USAGE;
-
-    $today =
-        date('Y-m-d');
-
-    $data =
-        readJson(
-            $USAGE,
-            [
-                'date' => $today,
-                'count' => 0
-            ]
+        'bot_' .
+        date('Ymd_His') .
+        '_' .
+        bin2hex(
+            random_bytes(4)
         );
-
-    if (
-        ($data['date'] ?? '')
-        !==
-        $today
-    ) {
-
-        $data = [
-            'date' => $today,
-            'count' => 0
-        ];
-
-        writeJson(
-            $USAGE,
-            $data
-        );
-    }
-
-    return $data;
-}
-
-
-function canDeploy(): bool {
-
-    global $DAILY_LIMIT;
-
-    return
-        usage()['count']
-        <
-        $DAILY_LIMIT;
-}
-
-
-function addUsage(): void {
-
-    global $USAGE;
-
-    $data =
-        usage();
-
-    $data['count']++;
-
-    writeJson(
-        $USAGE,
-        $data
-    );
-}
-
-
-/* =========================================================
-   COMMAND EXECUTION
-========================================================= */
-
-function runCommand(
-    string $command
-): array {
-
-    $output = [];
-
-    $code = 0;
-
-    exec(
-        $command . ' 2>&1',
-        $output,
-        $code
-    );
-
-    return [
-        'code' => $code,
-        'output' =>
-            implode(
-                "\n",
-                $output
-            )
-    ];
-}
-
-
-/* =========================================================
-   RAILWAY ENVIRONMENT
-========================================================= */
-
-function railwayEnv(
-    string $token
-): string {
-
-    return
-        'RAILWAY_API_TOKEN='
-        . escapeshellarg(
-            $token
-        );
-}
-
-
-/* =========================================================
-   RAILWAY COMMAND
-========================================================= */
-
-function railway(
-    string $command
-): array {
-
-    global $RAILWAY_TOKEN;
-
-    if (!$RAILWAY_TOKEN) {
-
-        return [
-            'code' => 1,
-            'output' =>
-                'RAILWAY_API_TOKEN is not configured.'
-        ];
-    }
-
-    return runCommand(
-        railwayEnv(
-            $RAILWAY_TOKEN
-        )
-        . ' railway '
-        . $command
-    );
 }
 
 
@@ -418,22 +234,22 @@ function detectToken(
         /*
          * Direct Telegram token
          */
-
         '/\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/',
 
         /*
-         * PHP/Python assignments
+         * BOT_TOKEN = "..."
          */
+        '/(?:BOT_TOKEN|TELEGRAM_BOT_TOKEN)\s*=\s*[\'"]([^\'"]+)[\'"]/i',
 
-        '/(?:BOT_TOKEN|TOKEN)\s*(?:=|=>)\s*[\'"]([^\'"]+)[\'"]/i',
-
-        '/(?:BOT_TOKEN|TOKEN)\s*=\s*([^\s;]+)/i'
+        /*
+         * PHP:
+         * $token = "..."
+         */
+        '/(?:\$)?(?:BOT_TOKEN|TELEGRAM_BOT_TOKEN|TOKEN)\s*=\s*[\'"]([^\'"]+)[\'"]/i'
 
     ];
 
-    foreach (
-        $patterns as $pattern
-    ) {
+    foreach ($patterns as $pattern) {
 
         if (
             preg_match(
@@ -443,10 +259,24 @@ function detectToken(
             )
         ) {
 
-            return
-                $m[1]
-                ??
-                $m[0];
+            if (
+                isset($m[1]) &&
+                preg_match(
+                    '/^\d{8,12}:[A-Za-z0-9_-]{30,}$/',
+                    $m[1]
+                )
+            ) {
+                return $m[1];
+            }
+
+            if (
+                preg_match(
+                    '/^\d{8,12}:[A-Za-z0-9_-]{30,}$/',
+                    $m[0]
+                )
+            ) {
+                return $m[0];
+            }
         }
     }
 
@@ -458,21 +288,19 @@ function detectToken(
    ADMIN ID DETECTION
 ========================================================= */
 
-function detectAdmin(
+function detectAdminId(
     string $source
 ): ?string {
 
     $patterns = [
 
-        '/(?:ADMIN_ID|OWNER_ID)\s*(?:=|=>)\s*[\'"]?(\d{5,15})/i',
+        '/(?:ADMIN_ID|OWNER_ID)\s*=\s*[\'"]?(\d{5,15})/i',
 
-        '/(?:ADMIN_IDS)\s*=\s*[\[\(]\s*[\'"]?(\d{5,15})/i'
+        '/(?:ADMINID|OWNERID)\s*=\s*[\'"]?(\d{5,15})/i'
 
     ];
 
-    foreach (
-        $patterns as $pattern
-    ) {
+    foreach ($patterns as $pattern) {
 
         if (
             preg_match(
@@ -491,26 +319,17 @@ function detectAdmin(
 
 
 /* =========================================================
-   TELEGRAM BOT REAL VERIFICATION
+   TELEGRAM BOT VERIFY
 ========================================================= */
 
-function verifyTelegramBot(
+function verifyBot(
     string $token
 ): array {
 
-    if (!$token) {
-
-        return [
-            'ok' => false,
-            'error' =>
-                'Telegram bot token was not detected.'
-        ];
-    }
-
     $url =
         'https://api.telegram.org/bot'
-        . $token
-        . '/getMe';
+        . $token .
+        '/getMe';
 
     $ch =
         curl_init($url);
@@ -519,8 +338,7 @@ function verifyTelegramBot(
         $ch,
         [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 20,
-            CURLOPT_CONNECTTIMEOUT => 10
+            CURLOPT_TIMEOUT => 20
         ]
     );
 
@@ -542,65 +360,42 @@ function verifyTelegramBot(
         );
 
     if (
-        $http !== 200
-        ||
-        !isset(
-            $json['ok']
-        )
+        $http !== 200 ||
+        !isset($json['ok']) ||
+        !$json['ok']
     ) {
 
         return [
-            'ok' => false,
-            'error' =>
-                'Telegram token is invalid or Telegram API is unreachable.'
+            'ok' => false
         ];
     }
 
-    $result =
-        $json['result'];
-
     return [
-
         'ok' => true,
-
         'id' =>
-            $result['id'] ?? '',
-
+            $json['result']['id'] ?? '',
         'username' =>
-            $result['username'] ?? '',
-
+            $json['result']['username'] ?? '',
         'name' =>
-            $result['first_name'] ?? '',
-
-        'can_join_groups' =>
-            $result['can_join_groups'] ?? false
-
+            $json['result']['first_name'] ?? ''
     ];
 }
 
 
 /* =========================================================
-   MASK TOKEN
+   MASK
 ========================================================= */
 
-function mask(
+function maskToken(
     ?string $token
 ): string {
 
     if (!$token) {
-        return 'Not detected';
-    }
-
-    if (
-        strlen($token) < 10
-    ) {
-
-        return '••••••••';
+        return 'NOT FOUND';
     }
 
     return
-        '••••••'
-        .
+        '******' .
         substr(
             $token,
             -6
@@ -609,316 +404,356 @@ function mask(
 
 
 /* =========================================================
-   PROJECT ID
+   DAILY COUNTER
 ========================================================= */
 
-function projectId(): string {
+function usage(): array
+{
+    $file =
+        DATA_ROOT .
+        '/usage.json';
 
-    return
-        'bot_' .
-        date('Ymd_His') .
-        '_' .
-        bin2hex(
-            random_bytes(3)
+    $today =
+        date('Y-m-d');
+
+    if (!file_exists($file)) {
+
+        $data = [
+            'date' => $today,
+            'count' => 0
+        ];
+
+        file_put_contents(
+            $file,
+            json_encode($data)
         );
+
+        return $data;
+    }
+
+    $data =
+        json_decode(
+            file_get_contents($file),
+            true
+        );
+
+    if (
+        !is_array($data) ||
+        ($data['date'] ?? '')
+        !== $today
+    ) {
+
+        $data = [
+            'date' => $today,
+            'count' => 0
+        ];
+    }
+
+    return $data;
 }
 
 
-/* =========================================================
-   PATCH SOURCE
-========================================================= */
+function increaseUsage(): void
+{
+    $file =
+        DATA_ROOT .
+        '/usage.json';
 
-function prepareSource(
-    string $file,
-    string $token,
-    string $adminId,
-    string $webhook
-): void {
+    $data =
+        usage();
 
-    $source =
-        file_get_contents(
-            $file
-        );
-
-    /*
-     * Replace common token assignments.
-     *
-     * This is intentionally conservative.
-     */
-
-    $source =
-        preg_replace(
-            '/(BOT_TOKEN\s*=\s*[\'"])[^\'"]+([\'"])/i',
-            '$1'
-            . addslashes($token)
-            . '$2',
-            $source
-        );
-
-
-    $source =
-        preg_replace(
-            '/(ADMIN_ID\s*=\s*[\'"]?)[0-9]{5,15}([\'"]?)/i',
-            '$1'
-            . $adminId
-            . '$2',
-            $source
-        );
-
-
-    /*
-     * WEBHOOK_URL replacement where already present.
-     */
-
-    $source =
-        preg_replace(
-            '/(WEBHOOK_URL\s*=\s*[\'"])[^\'"]*([\'"])/i',
-            '$1'
-            . $webhook
-            . '$2',
-            $source
-        );
-
+    $data['count']++;
 
     file_put_contents(
         $file,
-        $source
+        json_encode($data)
     );
 }
 
 
 /* =========================================================
-   CREATE RAILWAY PROJECT
+   PROCESS HELPERS
 ========================================================= */
 
-function railwayCreateProject(
-    string $dir,
-    string $name
-): array {
+function pidFile(
+    string $id
+): string {
 
-    $old =
-        getcwd();
-
-    chdir($dir);
-
-    /*
-     * --new creates a new project/service.
-     * --yes avoids interactive prompts.
-     */
-
-    $result =
-        railway(
-            'up --new --yes --name '
-            . escapeshellarg($name)
-            . ' --detach'
-        );
-
-    chdir($old);
-
-    return $result;
+    return
+        HOST_ROOT .
+        '/' .
+        $id .
+        '/bot.pid';
 }
 
 
-/* =========================================================
-   GENERATE DOMAIN
-========================================================= */
-
-function railwayDomain(
-    string $dir
-): ?string {
-
-    $old =
-        getcwd();
-
-    chdir($dir);
-
-    $result =
-        railway(
-            'domain --json'
-        );
-
-    chdir($old);
-
-    if (
-        $result['code'] !== 0
-    ) {
-
-        return null;
-    }
-
-
-    /*
-     * Try JSON first.
-     */
-
-    $json =
-        json_decode(
-            $result['output'],
-            true
-        );
-
-    if (
-        is_array($json)
-    ) {
-
-        foreach (
-            $json as $item
-        ) {
-
-            if (
-                is_string($item)
-                &&
-                str_contains(
-                    $item,
-                    'railway.app'
-                )
-            ) {
-
-                return
-                    'https://'
-                    . preg_replace(
-                        '#^https?://#',
-                        '',
-                        $item
-                    );
-            }
-        }
-    }
-
-
-    /*
-     * Fallback parser.
-     */
-
-    if (
-        preg_match(
-            '#https://[A-Za-z0-9.-]+\.up\.railway\.app#',
-            $result['output'],
-            $m
-        )
-    ) {
-
-        return $m[0];
-    }
-
-    return null;
-}
-
-
-/* =========================================================
-   SET RAILWAY VARIABLES
-========================================================= */
-
-function setRailwayVariables(
-    string $dir,
-    string $token,
-    string $adminId,
-    string $webhook
+function processRunning(
+    string $id
 ): bool {
 
-    $old =
-        getcwd();
+    $file =
+        pidFile($id);
 
-    chdir($dir);
+    if (!file_exists($file)) {
+        return false;
+    }
 
+    $pid =
+        (int)trim(
+            file_get_contents($file)
+        );
 
-    /*
-     * Railway CLI variable set.
-     */
+    if ($pid <= 0) {
+        return false;
+    }
 
-    $commands = [
-
-        'variable set '
-        . 'BOT_TOKEN='
-        . escapeshellarg($token),
-
-        'variable set '
-        . 'ADMIN_ID='
-        . escapeshellarg($adminId),
-
-        'variable set '
-        . 'WEBHOOK_URL='
-        . escapeshellarg($webhook)
-
-    ];
+    return
+        file_exists(
+            "/proc/$pid"
+        );
+}
 
 
-    foreach (
-        $commands as $command
+/* =========================================================
+   START BOT
+========================================================= */
+
+function startBot(
+    string $id
+): array {
+
+    $db =
+        db();
+
+    if (!isset($db[$id])) {
+
+        return [
+            'ok' => false,
+            'error' => 'Bot not found'
+        ];
+    }
+
+    $bot =
+        $db[$id];
+
+    $dir =
+        HOST_ROOT .
+        '/' .
+        $id;
+
+    $file =
+        $dir .
+        '/' .
+        $bot['filename'];
+
+    $log =
+        $dir .
+        '/bot.log';
+
+    $pid =
+        $dir .
+        '/bot.pid';
+
+
+    if (
+        processRunning($id)
     ) {
 
-        $result =
-            railway(
-                $command
-            );
-
-        if (
-            $result['code'] !== 0
-        ) {
-
-            chdir($old);
-
-            return false;
-        }
+        return [
+            'ok' => true,
+            'message' =>
+                'Already running'
+        ];
     }
 
 
-    chdir($old);
+    /*
+     * IMPORTANT:
+     *
+     * PHP bot:
+     *     php bot.php
+     *
+     * Python bot:
+     *     python3 bot.py
+     *
+     * Environment variables are also passed.
+     */
+
+    if (
+        $bot['language'] === 'PHP'
+    ) {
+
+        $command =
+            'cd ' .
+            escapeshellarg($dir) .
+            ' && ' .
+            'BOT_TOKEN=' .
+            escapeshellarg(
+                $bot['token']
+            ) .
+            ' ADMIN_ID=' .
+            escapeshellarg(
+                $bot['admin_id']
+            ) .
+            ' WEBHOOK_URL=' .
+            escapeshellarg(
+                BASE_DOMAIN .
+                '/b/' .
+                $id
+            ) .
+            ' nohup php ' .
+            escapeshellarg(
+                $file
+            ) .
+            ' > ' .
+            escapeshellarg($log) .
+            ' 2>&1 & echo $!';
+
+    } else {
+
+        $command =
+            'cd ' .
+            escapeshellarg($dir) .
+            ' && ' .
+            'BOT_TOKEN=' .
+            escapeshellarg(
+                $bot['token']
+            ) .
+            ' ADMIN_ID=' .
+            escapeshellarg(
+                $bot['admin_id']
+            ) .
+            ' WEBHOOK_URL=' .
+            escapeshellarg(
+                BASE_DOMAIN .
+                '/b/' .
+                $id
+            ) .
+            ' nohup python3 ' .
+            escapeshellarg(
+                $file
+            ) .
+            ' > ' .
+            escapeshellarg($log) .
+            ' 2>&1 & echo $!';
+    }
+
+
+    $output = [];
+
+    exec(
+        $command,
+        $output
+    );
+
+
+    $newPid =
+        (int)($output[0] ?? 0);
+
+
+    if ($newPid <= 0) {
+
+        return [
+            'ok' => false,
+            'error' =>
+                'Process could not start'
+        ];
+    }
+
+
+    file_put_contents(
+        $pid,
+        $newPid
+    );
+
+
+    $db[$id]['status'] =
+        'RUNNING';
+
+    $db[$id]['pid'] =
+        $newPid;
+
+    $db[$id]['started_at'] =
+        date('c');
+
+    saveDb($db);
+
+
+    return [
+        'ok' => true,
+        'pid' => $newPid
+    ];
+}
+
+
+/* =========================================================
+   STOP BOT
+========================================================= */
+
+function stopBot(
+    string $id
+): bool {
+
+    $file =
+        pidFile($id);
+
+    if (!file_exists($file)) {
+        return true;
+    }
+
+    $pid =
+        (int)trim(
+            file_get_contents($file)
+        );
+
+    if ($pid > 0) {
+
+        exec(
+            'kill ' .
+            escapeshellarg(
+                (string)$pid
+            )
+        );
+    }
+
+    @unlink($file);
+
+    $db =
+        db();
+
+    if (isset($db[$id])) {
+
+        $db[$id]['status'] =
+            'STOPPED';
+
+        saveDb($db);
+    }
 
     return true;
 }
 
 
 /* =========================================================
-   REDEPLOY AFTER VARIABLES
+   WEBHOOK
 ========================================================= */
 
-function railwayRedeploy(
-    string $dir
-): bool {
-
-    $old =
-        getcwd();
-
-    chdir($dir);
-
-    $result =
-        railway(
-            'redeploy -y'
-        );
-
-    chdir($old);
-
-    return
-        $result['code'] === 0;
-}
-
-
-/* =========================================================
-   SET TELEGRAM WEBHOOK
-========================================================= */
-
-function setWebhook(
-    string $botToken,
-    string $domain
+function setBotWebhook(
+    string $token,
+    string $id
 ): array {
 
     $url =
-        rtrim(
-            $domain,
-            '/'
-        )
-        . '/';
+        BASE_DOMAIN .
+        '/b/' .
+        $id;
 
-    $telegramUrl =
+    $api =
         'https://api.telegram.org/bot'
-        . $botToken
-        . '/setWebhook';
+        . $token .
+        '/setWebhook';
 
     $ch =
-        curl_init(
-            $telegramUrl
-        );
+        curl_init($api);
 
     curl_setopt_array(
         $ch,
@@ -952,50 +787,7 @@ function setWebhook(
 
 
 /* =========================================================
-   MAIN KEYBOARD
-========================================================= */
-
-function mainKeyboard(): array {
-
-    return [
-        'inline_keyboard' => [
-
-            [
-
-                [
-                    'text' =>
-                        '📤 Upload Bot',
-                    'callback_data' =>
-                        'upload'
-                ]
-
-            ],
-
-            [
-
-                [
-                    'text' =>
-                        '🤖 My Bots',
-                    'callback_data' =>
-                        'bots'
-                ],
-
-                [
-                    'text' =>
-                        '📊 Usage',
-                    'callback_data' =>
-                        'usage'
-                ]
-
-            ]
-
-        ]
-    ];
-}
-
-
-/* =========================================================
-   INPUT
+   MAIN UPDATE
 ========================================================= */
 
 $raw =
@@ -1004,36 +796,23 @@ $raw =
     );
 
 
-/*
- * Browser health check
- */
+/* Browser health */
 
 if (!$raw) {
 
     header(
-        'Content-Type: text/plain'
+        'Content-Type: application/json'
     );
 
-    echo
-        "VICKY Railway Bot Host Manager ONLINE\n";
-
-    echo
-        "PHP: "
-        . PHP_VERSION
-        . "\n";
-
-    echo
-        "Railway CLI: ";
-
-    $test =
-        railway(
-            '--version'
-        );
-
-    echo
-        $test['code'] === 0
-        ? trim($test['output'])
-        : 'NOT CONFIGURED';
+    echo json_encode([
+        'ok' => true,
+        'service' =>
+            'Vicky Bot Hosting',
+        'domain' =>
+            BASE_DOMAIN,
+        'status' =>
+            'online'
+    ]);
 
     exit;
 }
@@ -1052,7 +831,7 @@ if (!is_array($update)) {
 
 
 /* =========================================================
-   CALLBACK
+   CALLBACK QUERY
 ========================================================= */
 
 if (
@@ -1061,32 +840,30 @@ if (
     )
 ) {
 
-    $callback =
+    $cb =
         $update['callback_query'];
 
     $userId =
-        $callback['from']['id'] ??
-        null;
+        $cb['from']['id'] ?? 0;
 
     $chatId =
-        $callback['message']['chat']['id'] ??
-        null;
+        $cb['message']['chat']['id'] ?? 0;
 
     $action =
-        $callback['data'] ??
-        '';
+        $cb['data'] ?? '';
 
 
-    if (!admin($userId)) {
+    if (!isAdmin($userId)) {
 
-        tg(
+        telegram(
             'answerCallbackQuery',
             [
                 'callback_query_id' =>
-                    $callback['id'],
+                    $cb['id'],
                 'text' =>
-                    'Admin access only',
-                'show_alert' => true
+                    'Admin only',
+                'show_alert' =>
+                    true
             ]
         );
 
@@ -1094,74 +871,18 @@ if (
     }
 
 
-    tg(
+    telegram(
         'answerCallbackQuery',
         [
             'callback_query_id' =>
-                $callback['id']
+                $cb['id']
         ]
     );
 
 
-    /* ---------------------------------------------
-       UPLOAD
-    --------------------------------------------- */
-
-    if (
-        $action === 'upload'
-    ) {
-
-        send(
-            (string)$chatId,
-
-            "📤 <b>Upload Bot</b>\n\n"
-            . "Send your Telegram bot file:\n\n"
-            . "• .php\n"
-            . "• .py\n\n"
-            . "I will read and verify it."
-        );
-
-        exit;
-    }
-
-
-    /* ---------------------------------------------
-       USAGE
-    --------------------------------------------- */
-
-    if (
-        $action === 'usage'
-    ) {
-
-        $u =
-            usage();
-
-        send(
-            (string)$chatId,
-
-            "📊 <b>Daily Deployment</b>\n\n"
-            . "Used: <b>"
-            . $u['count']
-            . "/"
-            . $DAILY_LIMIT
-            . "</b>\n"
-            . "Remaining: <b>"
-            . max(
-                0,
-                $DAILY_LIMIT
-                -
-                $u['count']
-            )
-            . "</b>"
-        );
-
-        exit;
-    }
-
-
-    /* ---------------------------------------------
+    /* =========================
        VERIFY
-    --------------------------------------------- */
+    ========================= */
 
     if (
         str_starts_with(
@@ -1176,140 +897,88 @@ if (
                 7
             );
 
+        $db =
+            db();
 
-        $bots =
-            readJson(
-                $DB
-            );
+        if (!isset($db[$id])) {
 
-
-        if (
-            !isset(
-                $bots[$id]
-            )
-        ) {
-
-            send(
-                (string)$chatId,
-                "❌ Verification job expired."
+            sendMessage(
+                $chatId,
+                '❌ Bot job not found.'
             );
 
             exit;
         }
-
 
         $bot =
-            $bots[$id];
-
-
-        if (
-            empty(
-                $bot['token']
-            )
-        ) {
-
-            send(
-                (string)$chatId,
-                "❌ Telegram bot token not detected."
-            );
-
-            exit;
-        }
-
-
-        send(
-            (string)$chatId,
-            "🔎 <b>Verifying Telegram bot...</b>"
-        );
+            $db[$id];
 
 
         $check =
-            verifyTelegramBot(
+            verifyBot(
                 $bot['token']
             );
 
 
-        if (
-            !$check['ok']
-        ) {
+        if (!$check['ok']) {
 
-            send(
-                (string)$chatId,
-
-                "❌ <b>Telegram verification failed</b>\n\n"
-                . htmlspecialchars(
-                    $check['error']
-                )
+            sendMessage(
+                $chatId,
+                "❌ Telegram bot verification failed."
             );
 
             exit;
         }
 
 
-        $bots[$id]['telegram_id'] =
-            $check['id'];
-
-        $bots[$id]['username'] =
-            $check['username'];
-
-        $bots[$id]['name'] =
-            $check['name'];
-
-        $bots[$id]['verified'] =
+        $db[$id]['verified'] =
             true;
 
+        $db[$id]['username'] =
+            $check['username'];
 
-        writeJson(
-            $DB,
-            $bots
-        );
+        $db[$id]['telegram_id'] =
+            $check['id'];
+
+        $db[$id]['bot_name'] =
+            $check['name'];
+
+        saveDb($db);
 
 
-        send(
-            (string)$chatId,
+        sendMessage(
+            $chatId,
 
             "✅ <b>Telegram Bot Verified</b>\n\n"
 
-            . "🤖 Username: <b>@"
+            . "🤖 @"
             . htmlspecialchars(
                 $check['username']
             )
-            . "</b>\n"
+            . "\n"
 
-            . "📛 Name: <b>"
+            . "📛 "
             . htmlspecialchars(
                 $check['name']
             )
-            . "</b>\n"
+            . "\n"
 
-            . "🆔 Telegram Bot ID: <code>"
+            . "🆔 <code>"
             . $check['id']
-            . "</code>\n"
-
-            . "👤 Admin ID: <code>"
-            . $bot['admin_id']
-            . "</code>\n"
-
-            . "🔐 Token: <code>"
-            . mask(
-                $bot['token']
-            )
             . "</code>\n\n"
 
-            . "Everything is ready for Railway deployment.",
+            . "Now deploy it on the existing Railway server.",
 
             [
                 'inline_keyboard' => [
 
                     [
-
                         [
                             'text' =>
-                                '🚀 DEPLOY TO RAILWAY',
+                                '🚀 RUN ON EXISTING SERVER',
                             'callback_data' =>
-                                'deploy:' . $id
+                                'run:' . $id
                         ]
-
                     ]
 
                 ]
@@ -1320,64 +989,43 @@ if (
     }
 
 
-    /* ---------------------------------------------
-       DEPLOY
-    --------------------------------------------- */
+    /* =========================
+       RUN
+    ========================= */
 
     if (
         str_starts_with(
             $action,
-            'deploy:'
+            'run:'
         )
     ) {
 
         $id =
             substr(
                 $action,
-                7
+                4
             );
 
-
-        if (!canDeploy()) {
-
-            send(
-                (string)$chatId,
-                "⛔ Daily 100-bot deployment limit reached."
-            );
-
-            exit;
-        }
+        $db =
+            db();
 
 
-        if (!$RAILWAY_TOKEN) {
+        if (!isset($db[$id])) {
 
-            send(
-                (string)$chatId,
-
-                "❌ <b>Railway authentication missing.</b>\n\n"
-                . "Set <code>RAILWAY_API_TOKEN</code> "
-                . "on the manager server."
+            sendMessage(
+                $chatId,
+                '❌ Bot not found.'
             );
 
             exit;
         }
 
 
-        $bots =
-            readJson(
-                $DB
-            );
+        if (!canDeployToday()) {
 
-
-        if (
-            !isset(
-                $bots[$id]
-            )
-        ) {
-
-            send(
-                (string)$chatId,
-                "❌ Bot not found."
+            sendMessage(
+                $chatId,
+                '⛔ Daily 100 deployment limit reached.'
             );
 
             exit;
@@ -1385,166 +1033,27 @@ if (
 
 
         $bot =
-            $bots[$id];
-
-
-        if (
-            empty(
-                $bot['verified']
-            )
-        ) {
-
-            send(
-                (string)$chatId,
-                "❌ Verify the bot first."
-            );
-
-            exit;
-        }
-
-
-        send(
-            (string)$chatId,
-            "🚀 <b>Railway deployment started...</b>\n\n"
-            . "1️⃣ Creating project\n"
-            . "2️⃣ Uploading source\n"
-            . "3️⃣ Setting variables\n"
-            . "4️⃣ Building\n"
-            . "5️⃣ Creating domain\n"
-            . "6️⃣ Setting Telegram webhook"
-        );
-
-
-        $projectDir =
-            $PROJECTS
-            . '/'
-            . $id;
-
-
-        if (!is_dir(
-            $projectDir
-        )) {
-
-            mkdir(
-                $projectDir,
-                0755,
-                true
-            );
-        }
+            $db[$id];
 
 
         /*
-         * Copy uploaded source
+         * Start process
          */
 
-        $source =
-            $bot['source'];
-
-        $target =
-            $projectDir
-            . '/'
-            . basename(
-                $source
-            );
+        $result =
+            startBot($id);
 
 
-        copy(
-            $source,
-            $target
-        );
+        if (!$result['ok']) {
 
+            sendMessage(
+                $chatId,
 
-        /*
-         * Detect entry file
-         */
-
-        $entry =
-            basename(
-                $target
-            );
-
-
-        /*
-         * Railway/Docker deployment.
-         *
-         * For PHP webhook bot:
-         * create simple Dockerfile.
-         */
-
-        if (
-            $bot['language']
-            ===
-            'PHP'
-        ) {
-
-            $dockerfile = <<<DOCKER
-FROM php:8.3-apache
-
-WORKDIR /var/www/html
-
-COPY . /var/www/html/
-
-RUN a2enmod rewrite
-
-EXPOSE 80
-
-CMD ["apache2-foreground"]
-DOCKER;
-
-        } else {
-
-            /*
-             * Python webhook/polling bot.
-             *
-             * Railway will use this start command.
-             */
-
-            $dockerfile = <<<DOCKER
-FROM python:3.12-slim
-
-WORKDIR /app
-
-COPY . /app
-
-RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
-
-CMD ["python", "{$entry}"]
-DOCKER;
-        }
-
-
-        file_put_contents(
-            $projectDir
-            . '/Dockerfile',
-            $dockerfile
-        );
-
-
-        /*
-         * Create Railway project
-         */
-
-        $create =
-            railwayCreateProject(
-                $projectDir,
-                'vicky-' . $id
-            );
-
-
-        if (
-            $create['code'] !== 0
-        ) {
-
-            send(
-                (string)$chatId,
-
-                "❌ <b>Railway project creation failed</b>\n\n"
+                "❌ <b>Bot start failed</b>\n\n"
                 . "<pre>"
                 . htmlspecialchars(
-                    substr(
-                        $create['output'],
-                        -3000
-                    )
+                    $result['error']
+                    ?? 'Unknown error'
                 )
                 . "</pre>"
             );
@@ -1554,145 +1063,40 @@ DOCKER;
 
 
         /*
-         * First deployment has been queued.
-         *
-         * Give Railway a little time
-         * before domain/variables operations.
-         */
-
-        sleep(8);
-
-
-        /*
-         * Generate Railway domain
-         */
-
-        $domain =
-            railwayDomain(
-                $projectDir
-            );
-
-
-        if (!$domain) {
-
-            send(
-                (string)$chatId,
-
-                "⚠️ Deployment created, "
-                . "but Railway domain could not yet be generated.\n\n"
-                . "Open Railway project and create a service domain."
-            );
-
-            exit;
-        }
-
-
-        /*
-         * Webhook URL
-         */
-
-        $webhook =
-            rtrim(
-                $domain,
-                '/'
-            )
-            . '/';
-
-
-        /*
-         * Set environment variables
-         */
-
-        $variables =
-            setRailwayVariables(
-                $projectDir,
-                $bot['token'],
-                $ADMIN_ID,
-                $webhook
-            );
-
-
-        if (!$variables) {
-
-            send(
-                (string)$chatId,
-
-                "⚠️ Railway deployed, but "
-                . "environment variables could not be updated.\n\n"
-                . "Domain:\n"
-                . $webhook
-            );
-
-            exit;
-        }
-
-
-        /*
-         * Redeploy so new variables are used.
-         */
-
-        railwayRedeploy(
-            $projectDir
-        );
-
-
-        sleep(8);
-
-
-        /*
-         * Set Telegram webhook.
+         * Webhook
          */
 
         $hook =
-            setWebhook(
+            setBotWebhook(
                 $bot['token'],
-                $webhook
+                $id
             );
 
 
-        /*
-         * Save deployment.
-         */
+        $db =
+            db();
 
-        $bots[$id]['domain'] =
-            $domain;
+        $db[$id]['webhook'] =
+            BASE_DOMAIN .
+            '/b/' .
+            $id;
 
-        $bots[$id]['webhook'] =
-            $webhook;
-
-        $bots[$id]['webhook_ok'] =
+        $db[$id]['webhook_ok'] =
             $hook['ok'] ?? false;
 
-        $bots[$id]['status'] =
-            'LIVE';
+        $db[$id]['status'] =
+            'RUNNING';
 
-        $bots[$id]['deployed_at'] =
-            date('c');
-
-
-        writeJson(
-            $DB,
-            $bots
-        );
+        saveDb($db);
 
 
-        addUsage();
+        increaseUsage();
 
 
-        /*
-         * FINAL RESULT
-         */
+        sendMessage(
+            $chatId,
 
-        $webhookStatus =
-            ($hook['ok'] ?? false)
-            ? '🟢 Webhook set'
-            : '🔴 Webhook failed';
-
-
-        send(
-            (string)$chatId,
-
-            "🎉 <b>BOT DEPLOYED SUCCESSFULLY</b>\n\n"
+            "🎉 <b>BOT HOSTED SUCCESSFULLY</b>\n\n"
 
             . "🤖 Bot: <b>@"
             . htmlspecialchars(
@@ -1700,148 +1104,157 @@ DOCKER;
             )
             . "</b>\n"
 
-            . "💻 Language: <b>"
+            . "💻 Type: <b>"
             . $bot['language']
             . "</b>\n"
 
-            . "🆔 Bot ID: <code>"
-            . $id
-            . "</code>\n\n"
+            . "🟢 Status: <b>RUNNING</b>\n\n"
 
-            . "🌐 <b>Railway Domain</b>\n"
+            . "🌐 <b>Existing Railway Domain</b>\n"
             . "<code>"
-            . htmlspecialchars(
-                $domain
-            )
+            . BASE_DOMAIN
             . "</code>\n\n"
 
-            . "🔗 <b>Webhook</b>\n"
+            . "🔗 <b>Bot Webhook</b>\n"
             . "<code>"
-            . htmlspecialchars(
-                $webhook
-            )
+            . BASE_DOMAIN .
+              '/b/' .
+              $id
             . "</code>\n\n"
 
-            . $webhookStatus
-            . "\n\n"
-
-            . "📊 Today's deployments: <b>"
-            . usage()['count']
-            . "/"
-            . $DAILY_LIMIT
-            . "</b>",
-
-            [
-                'inline_keyboard' => [
-
-                    [
-
-                        [
-                            'text' =>
-                                '🌐 OPEN DOMAIN',
-                            'url' =>
-                                $domain
-                        ]
-
-                    ],
-
-                    [
-
-                        [
-                            'text' =>
-                                '🤖 My Bots',
-                            'callback_data' =>
-                                'bots'
-                        ]
-
-                    ]
-
-                ]
-            ]
+            . (
+                ($hook['ok'] ?? false)
+                ? "✅ Telegram webhook set successfully."
+                : "⚠️ Bot started but webhook could not be set."
+            )
         );
 
         exit;
     }
 
 
-    /* ---------------------------------------------
-       MY BOTS
-    --------------------------------------------- */
+    /* =========================
+       STOP
+    ========================= */
 
     if (
-        $action === 'bots'
+        str_starts_with(
+            $action,
+            'stop:'
+        )
     ) {
 
-        $bots =
-            readJson(
-                $DB
+        $id =
+            substr(
+                $action,
+                5
             );
 
+        stopBot($id);
 
-        if (!$bots) {
+        sendMessage(
+            $chatId,
+            "🛑 Bot stopped."
+        );
 
-            send(
-                (string)$chatId,
-                "🤖 No deployed bots."
+        exit;
+    }
+
+
+    /* =========================
+       RESTART
+    ========================= */
+
+    if (
+        str_starts_with(
+            $action,
+            'restart:'
+        )
+    ) {
+
+        $id =
+            substr(
+                $action,
+                8
+            );
+
+        stopBot($id);
+
+        sleep(1);
+
+        $result =
+            startBot($id);
+
+        sendMessage(
+            $chatId,
+
+            $result['ok']
+            ? "🔄 <b>Bot restarted successfully.</b>"
+            : "❌ Restart failed."
+        );
+
+        exit;
+    }
+
+
+    /* =========================
+       LOGS
+    ========================= */
+
+    if (
+        str_starts_with(
+            $action,
+            'logs:'
+        )
+    ) {
+
+        $id =
+            substr(
+                $action,
+                5
+            );
+
+        $log =
+            HOST_ROOT .
+            '/' .
+            $id .
+            '/bot.log';
+
+
+        if (!file_exists($log)) {
+
+            sendMessage(
+                $chatId,
+                'No logs available.'
             );
 
             exit;
         }
 
 
-        foreach (
-            $bots as $id => $bot
-        ) {
-
-            send(
-                (string)$chatId,
-
-                "🤖 <b>"
-                . htmlspecialchars(
-                    $bot['name']
-                    ?? 'Bot'
-                )
-                . "</b>\n\n"
-
-                . "Username: <b>@"
-                . htmlspecialchars(
-                    $bot['username']
-                    ?? 'unknown'
-                )
-                . "</b>\n"
-
-                . "Status: <b>"
-                . htmlspecialchars(
-                    $bot['status']
-                    ?? 'unknown'
-                )
-                . "</b>\n\n"
-
-                . "🌐 "
-                . htmlspecialchars(
-                    $bot['domain']
-                    ?? 'No domain'
-                ),
-
-                [
-                    'inline_keyboard' => [
-
-                        [
-
-                            [
-                                'text' =>
-                                    '🌐 Open',
-                                'url' =>
-                                    $bot['domain']
-                                    ?? 'https://railway.app'
-                            ]
-
-                        ]
-
-                    ]
-                ]
+        $content =
+            file_get_contents(
+                $log
             );
-        }
+
+
+        $content =
+            substr(
+                $content,
+                -3500
+            );
+
+
+        sendMessage(
+            $chatId,
+
+            "📋 <b>Bot Logs</b>\n\n"
+            . "<pre>"
+            . htmlspecialchars(
+                $content
+            )
+            . "</pre>"
+        );
 
         exit;
     }
@@ -1849,7 +1262,7 @@ DOCKER;
 
 
 /* =========================================================
-   MESSAGE / FILE UPLOAD
+   MESSAGE
 ========================================================= */
 
 if (
@@ -1863,18 +1276,18 @@ if (
 
     $chatId =
         $message['chat']['id']
-        ?? null;
+        ?? 0;
 
     $userId =
         $message['from']['id']
-        ?? null;
+        ?? 0;
 
 
-    if (!admin($userId)) {
+    if (!isAdmin($userId)) {
 
-        send(
-            (string)$chatId,
-            "⛔ <b>Admin access only.</b>"
+        sendMessage(
+            $chatId,
+            '⛔ Admin access only.'
         );
 
         exit;
@@ -1898,32 +1311,50 @@ if (
         $u =
             usage();
 
-        send(
-            (string)$chatId,
+        sendMessage(
+            $chatId,
 
-            "🚀 <b>VICKY RAILWAY BOT HOST</b>\n\n"
+            "🚀 <b>VICKY BOT HOSTING</b>\n\n"
 
-            . "📤 Upload .PHP / .PY\n"
-            . "🔍 Automatic source analysis\n"
+            . "Existing Railway server:\n"
+            . "<code>"
+            . BASE_DOMAIN
+            . "</code>\n\n"
+
+            . "📤 Upload PHP/Python bot\n"
+            . "🔍 Automatic analysis\n"
             . "🤖 Real Telegram verification\n"
-            . "🚂 Railway deployment\n"
-            . "🌐 Automatic domain\n"
-            . "🔗 Automatic webhook\n\n"
+            . "▶️ Start on existing server\n"
+            . "🔗 Automatic webhook\n"
+            . "📋 Logs / Restart / Stop\n\n"
 
-            . "📊 Deployments today: <b>"
+            . "Today's hosting actions: <b>"
             . $u['count']
             . "/"
-            . $DAILY_LIMIT
+            . DAILY_LIMIT
             . "</b>",
 
-            mainKeyboard()
+            [
+                'inline_keyboard' => [
+
+                    [
+                        [
+                            'text' =>
+                                '📤 Upload Bot',
+                            'callback_data' =>
+                                'upload'
+                        ]
+                    ]
+
+                ]
+            ]
         );
 
         exit;
     }
 
 
-    /* FILE */
+    /* UPLOAD */
 
     if (
         isset(
@@ -1946,59 +1377,51 @@ if (
             )
         ) {
 
-            send(
-                (string)$chatId,
-                "❌ Only .php and .py files are allowed."
+            sendMessage(
+                $chatId,
+                "❌ Only PHP and Python files are allowed."
             );
 
             exit;
         }
 
 
-        if (
-            !canDeploy()
-        ) {
+        if (!canDeployToday()) {
 
-            send(
-                (string)$chatId,
-                "⛔ Daily 100 deployment limit reached."
+            sendMessage(
+                $chatId,
+                "⛔ Today's 100-bot limit is reached."
             );
 
             exit;
         }
 
 
-        send(
-            (string)$chatId,
-
-            "🔎 <b>Reading your bot...</b>\n\n"
-            . "Checking source..."
+        sendMessage(
+            $chatId,
+            "🔎 <b>Reading and analysing bot...</b>"
         );
 
 
-        $fileId =
-            $document['file_id'];
-
-
-        $file =
-            tg(
+        $fileInfo =
+            telegram(
                 'getFile',
                 [
                     'file_id' =>
-                        $fileId
+                        $document['file_id']
                 ]
             );
 
 
         if (
             !isset(
-                $file['result']['file_path']
+                $fileInfo['result']['file_path']
             )
         ) {
 
-            send(
-                (string)$chatId,
-                "❌ Telegram file download failed."
+            sendMessage(
+                $chatId,
+                '❌ Could not download file.'
             );
 
             exit;
@@ -2006,67 +1429,32 @@ if (
 
 
         $remote =
-            $file['result']['file_path'];
+            $fileInfo['result']['file_path'];
 
 
-        $download =
+        $url =
             'https://api.telegram.org/file/bot'
-            . $MANAGER_BOT_TOKEN
+            . MANAGER_BOT_TOKEN
             . '/'
             . $remote;
 
 
         $source =
             file_get_contents(
-                $download
+                $url
             );
 
 
         if ($source === false) {
 
-            send(
-                (string)$chatId,
-                "❌ Could not read uploaded file."
+            sendMessage(
+                $chatId,
+                '❌ Could not read source.'
             );
 
             exit;
         }
 
-
-        $id =
-            projectId();
-
-
-        $project =
-            $PROJECTS
-            . '/'
-            . $id;
-
-
-        mkdir(
-            $project,
-            0755,
-            true
-        );
-
-
-        $sourceFile =
-            $project
-            . '/'
-            . basename(
-                $filename
-            );
-
-
-        file_put_contents(
-            $sourceFile,
-            $source
-        );
-
-
-        /*
-         * Analyze
-         */
 
         $token =
             detectToken(
@@ -2075,15 +1463,115 @@ if (
 
 
         $detectedAdmin =
-            detectAdmin(
+            detectAdminId(
                 $source
             );
+
+
+        if (!$token) {
+
+            sendMessage(
+                $chatId,
+
+                "❌ <b>Telegram bot token not found.</b>\n\n"
+                . "Upload a bot file containing BOT_TOKEN."
+            );
+
+            exit;
+        }
+
+
+        $verify =
+            verifyBot(
+                $token
+            );
+
+
+        if (!$verify['ok']) {
+
+            sendMessage(
+                $chatId,
+
+                "❌ <b>Detected token is invalid.</b>\n\n"
+                . "The uploaded bot could not be verified by Telegram."
+            );
+
+            exit;
+        }
+
+
+        $id =
+            botId();
+
+
+        $dir =
+            HOST_ROOT .
+            '/' .
+            $id;
+
+
+        mkdir(
+            $dir,
+            0755,
+            true
+        );
+
+
+        $safeFilename =
+            preg_replace(
+                '/[^A-Za-z0-9._-]/',
+                '_',
+                $filename
+            );
+
+
+        $target =
+            $dir .
+            '/' .
+            $safeFilename;
+
+
+        file_put_contents(
+            $target,
+            $source
+        );
+
+
+        /*
+         * Python dependencies
+         *
+         * Existing requirements.txt
+         * is kept untouched.
+         */
+
+        if (
+            strtolower(
+                pathinfo(
+                    $safeFilename,
+                    PATHINFO_EXTENSION
+                )
+            )
+            ===
+            'py'
+            &&
+            !file_exists(
+                $dir .
+                '/requirements.txt'
+            )
+        ) {
+
+            file_put_contents(
+                $dir .
+                '/requirements.txt',
+                ''
+            );
+        }
 
 
         $language =
             strtolower(
                 pathinfo(
-                    $filename,
+                    $safeFilename,
                     PATHINFO_EXTENSION
                 )
             )
@@ -2093,20 +1581,17 @@ if (
             : 'PYTHON';
 
 
-        /*
-         * Save job
-         */
-
-        $bots =
-            readJson(
-                $DB
-            );
+        $db =
+            db();
 
 
-        $bots[$id] = [
+        $db[$id] = [
 
-            'name' =>
-                $filename,
+            'id' =>
+                $id,
+
+            'filename' =>
+                $safeFilename,
 
             'language' =>
                 $language,
@@ -2116,16 +1601,25 @@ if (
 
             'admin_id' =>
                 $detectedAdmin
-                ?: $ADMIN_ID,
+                ?: ADMIN_ID,
 
-            'source' =>
-                $sourceFile,
+            'username' =>
+                $verify['username'],
+
+            'bot_name' =>
+                $verify['name'],
+
+            'telegram_id' =>
+                $verify['id'],
 
             'verified' =>
-                false,
+                true,
 
             'status' =>
-                'ANALYZED',
+                'READY',
+
+            'directory' =>
+                $dir,
 
             'created_at' =>
                 date('c')
@@ -2133,144 +1627,59 @@ if (
         ];
 
 
-        writeJson(
-            $DB,
-            $bots
-        );
+        saveDb($db);
 
 
-        /*
-         * Immediately verify if token found.
-         */
+        sendMessage(
+            $chatId,
 
-        $telegram =
-            verifyTelegramBot(
-                $token
-            );
+            "✅ <b>BOT VERIFIED</b>\n\n"
 
-
-        if (
-            !$telegram['ok']
-        ) {
-
-            send(
-                (string)$chatId,
-
-                "⚠️ <b>Bot file read successfully</b>\n\n"
-
-                . "📄 File: <code>"
-                . htmlspecialchars(
-                    $filename
-                )
-                . "</code>\n"
-
-                . "💻 Language: <b>"
-                . $language
-                . "</b>\n"
-
-                . "🔐 Token: <code>"
-                . mask(
-                    $token
-                )
-                . "</code>\n"
-
-                . "👤 Admin ID: <code>"
-                . (
-                    $detectedAdmin
-                    ?: $ADMIN_ID
-                )
-                . "</code>\n\n"
-
-                . "❌ Telegram verification failed:\n"
-                . htmlspecialchars(
-                    $telegram['error']
-                )
-            );
-
-            exit;
-        }
-
-
-        /*
-         * Save real Telegram identity.
-         */
-
-        $bots[$id]['verified'] =
-            true;
-
-        $bots[$id]['telegram_id'] =
-            $telegram['id'];
-
-        $bots[$id]['username'] =
-            $telegram['username'];
-
-        $bots[$id]['bot_name'] =
-            $telegram['name'];
-
-
-        writeJson(
-            $DB,
-            $bots
-        );
-
-
-        /*
-         * VERIFY BUTTON
-         */
-
-        send(
-            (string)$chatId,
-
-            "✅ <b>REAL BOT DETECTED</b>\n\n"
-
-            . "🤖 Username: <b>@"
+            . "🤖 <b>@"
             . htmlspecialchars(
-                $telegram['username']
+                $verify['username']
             )
             . "</b>\n"
 
-            . "📛 Name: <b>"
+            . "📛 "
             . htmlspecialchars(
-                $telegram['name']
+                $verify['name']
             )
-            . "</b>\n"
+            . "\n"
 
-            . "🆔 Telegram ID: <code>"
-            . $telegram['id']
+            . "🆔 <code>"
+            . $verify['id']
             . "</code>\n"
 
             . "👤 Admin ID: <code>"
             . (
                 $detectedAdmin
-                ?: $ADMIN_ID
+                ?: ADMIN_ID
             )
             . "</code>\n"
 
-            . "💻 Language: <b>"
+            . "💻 "
             . $language
-            . "</b>\n"
+            . "\n"
 
             . "🔐 Token: <code>"
-            . mask(
+            . maskToken(
                 $token
             )
             . "</code>\n\n"
 
-            . "Everything has been read successfully.\n"
-            . "Press <b>VERIFY</b> to continue.",
+            . "Ready to run on the existing Railway server.",
 
             [
                 'inline_keyboard' => [
 
                     [
-
                         [
                             'text' =>
-                                '✅ VERIFY',
+                                '🚀 RUN BOT',
                             'callback_data' =>
-                                'verify:' . $id
+                                'run:' . $id
                         ]
-
                     ]
 
                 ]
@@ -2283,9 +1692,108 @@ if (
 
 
 /* =========================================================
-   END
+   WEBHOOK ROUTER
+=========================================================
+
+   Telegram webhook requests arrive here:
+
+   /b/BOT_ID
+
+   The router forwards the update to the
+   bot's local HTTP server only if that bot
+   actually exposes an HTTP listener.
+
+   Polling bots do NOT need this route.
+========================================================= */
+
+$requestUri =
+    $_SERVER['REQUEST_URI']
+    ?? '/';
+
+
+if (
+    preg_match(
+        '#^/b/([A-Za-z0-9_-]+)#',
+        $requestUri,
+        $m
+    )
+) {
+
+    $id =
+        $m[1];
+
+    $db =
+        db();
+
+
+    if (!isset($db[$id])) {
+
+        http_response_code(404);
+
+        echo 'Bot not found';
+
+        exit;
+    }
+
+
+    /*
+     * Basic endpoint response.
+     *
+     * A webhook-compatible bot should expose
+     * its HTTP listener through its own process.
+     *
+     * Polling bots continue running independently.
+     */
+
+    header(
+        'Content-Type: application/json'
+    );
+
+    echo json_encode([
+        'ok' => true,
+        'bot' =>
+            $db[$id]['username']
+            ?? $id,
+        'status' =>
+            $db[$id]['status']
+            ?? 'unknown'
+    ]);
+
+    exit;
+}
+
+
+/* =========================================================
+   DEFAULT
 ========================================================= */
 
 http_response_code(200);
 
-?>
+header(
+    'Content-Type: application/json'
+);
+
+echo json_encode([
+    'ok' => true,
+    'service' =>
+        'Vicky Bot Hosting',
+    'domain' =>
+        BASE_DOMAIN
+]);
+
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function canDeployToday(): bool
+{
+    $u =
+        usage();
+
+    return
+        ($u['count'] ?? 0)
+        <
+        DAILY_LIMIT;
+}
