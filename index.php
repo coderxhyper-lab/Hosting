@@ -43,7 +43,7 @@ $ADMIN_IDS = [
 ======================================================== */
 
 $TERABOX_API =
-    "https://terabox-worker.robinkumarshakya103.workers.dev/api";
+    "https://luffy-api.is-dev.org/api/terafree?key=luffy&url=https://www.terabox.app/sharing/link?surl=V4h1HjREcOG-EbwzwsfPAw";
 
 
 /* ========================================================
