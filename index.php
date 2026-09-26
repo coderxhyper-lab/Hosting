@@ -89,7 +89,7 @@ https://example.com/index.php
 Do NOT leave YOUR-DOMAIN.COM.
 */
 const WEBAPP_URL =
-    'https://YOUR-DOMAIN.COM/index.php';
+    'https://hosting-production-aacd.up.railway.app/index.php';
 
 
 /* =========================================================
