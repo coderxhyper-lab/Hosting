@@ -1,37 +1,76 @@
 <?php
+/**
+ * ============================================================
+ * MAYAMUSIC - COMPLETE SINGLE FILE TELEGRAM MUSIC BOT
+ * PHP 8.1+
+ * ============================================================
+ *
+ * FEATURES
+ * ------------------------------------------------------------
+ * Telegram Bot
+ * /start /help /search /play /premium /account /redeem
+ * /utr /queue /genkey /give /revoke /broadcast
+ * /stats /apitest /webhookinfo /setwebhook /delwebhook
+ *
+ * MUSIC
+ * ------------------------------------------------------------
+ * Music search API
+ * Correct "artists" field
+ * Download/stream URL
+ * Album artwork via iTunes fallback
+ * Lyrics via LRCLIB
+ * Mini App HTML5 player
+ * Previous / Next
+ * Auto-next
+ * Queue
+ *
+ * PREMIUM
+ * ------------------------------------------------------------
+ * ₹49 / 30 days
+ * UPI payment
+ * UTR submission
+ * Admin approve / decline
+ * Account status
+ * Redeem keys
+ *
+ * ADMIN
+ * ------------------------------------------------------------
+ * Permanent access
+ * User management
+ * Generate redeem keys
+ * Give premium
+ * Revoke premium
+ * Payment approval
+ * Statistics
+ * API test
+ * Webhook diagnostics
+ *
+ * GROUP / CHANNEL
+ * ------------------------------------------------------------
+ * Group/channel access FREE
+ * /playcc command hooks included
+ *
+ * IMPORTANT
+ * ------------------------------------------------------------
+ * Telegram Bot API alone cannot become a Telegram Voice Chat
+ * audio participant. Actual VC audio playback requires a
+ * separate MTProto/voice engine.
+ * ============================================================
+ */
+
 declare(strict_types=1);
 
-/*
-|--------------------------------------------------------------------------
-| MAYAMUSIC - Single File Telegram Music Bot
-|--------------------------------------------------------------------------
-| PHP 8+
-| Railway compatible
-|
-| ONLY REQUIRED SECRET:
-| BOT_TOKEN
-|
-| Railway recommended environment variables:
-| BOT_TOKEN=YOUR_NEW_BOT_TOKEN
-|
-|--------------------------------------------------------------------------
-*/
-
-error_reporting(E_ALL);
-ini_set('display_errors', '0');
-ini_set('log_errors', '1');
-
-/* =========================================================
-   CONFIGURATION
-   ========================================================= */
+/* ============================================================
+   CONFIG
+   ============================================================ */
 
 const BOT_TOKEN = '8817347840:AAFpsNeTkzHqjnlqkV_18AjMEgIX-FXHmQo';
+const ADMIN_ID = 8897821078;
 
 const BOT_NAME = 'MAYAMUSIC';
 const BOT_USERNAME = 'MayaMusicDownload_BOT';
 
-const ADMIN_ID = 8897821078;
-const SUPPORT_USERNAME = '@HyperxVicky';
+const SUPPORT_USERNAME = 'HyperxVicky';
 
 const WEBAPP_URL =
     'https://hosting-production-aacd.up.railway.app/index.php';
@@ -39,76 +78,93 @@ const WEBAPP_URL =
 const MUSIC_API =
     'https://music-search-api-frnb.vercel.app/search?song=';
 
+const ITUNES_API =
+    'https://itunes.apple.com/search';
+
+const LRCLIB_API =
+    'https://lrclib.net/api/search';
+
 const MONTHLY_PRICE = 49;
-const PREMIUM_DAYS = 30;
+const ACCESS_DAYS = 30;
 
 const UPI_ID = 'vickybanna8674@ybl';
 const UPI_NAME = 'MAYAMUSIC';
 
 const DATA_DIR = __DIR__ . '/data';
 
-const USERS_FILE    = DATA_DIR . '/users.json';
-const PAYMENTS_FILE = DATA_DIR . '/payments.json';
-const KEYS_FILE     = DATA_DIR . '/keys.json';
-const PLAYERS_FILE  = DATA_DIR . '/players.json';
-const QUEUES_FILE   = DATA_DIR . '/queues.json';
-const LOG_FILE      = DATA_DIR . '/bot.log';
+const HTTP_TIMEOUT = 18;
+const API_CONNECT_TIMEOUT = 8;
 
-/* =========================================================
-   BASIC HELPERS
-   ========================================================= */
 
-function boot(): void
+/* ============================================================
+   ENVIRONMENT OVERRIDE
+   ============================================================ */
+
+function configBotToken(): string
 {
-    if (!is_dir(DATA_DIR)) {
-        @mkdir(DATA_DIR, 0775, true);
+    $env = getenv('BOT_TOKEN');
+
+    if ($env !== false && trim($env) !== '') {
+        return trim($env);
     }
 
-    $files = [
-        USERS_FILE,
-        PAYMENTS_FILE,
-        KEYS_FILE,
-        PLAYERS_FILE,
-        QUEUES_FILE
-    ];
-
-    foreach ($files as $file) {
-        if (!file_exists($file)) {
-            @file_put_contents($file, '{}', LOCK_EX);
-        }
-    }
+    return trim(BOT_TOKEN);
 }
 
-boot();
-
-function logMessage(string $message): void
+function configWebAppUrl(): string
 {
-    @file_put_contents(
-        LOG_FILE,
-        '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL,
-        FILE_APPEND | LOCK_EX
-    );
-}
+    $env = getenv('WEBAPP_URL');
 
-function loadJson(string $file): array
-{
-    if (!file_exists($file)) {
-        return [];
+    if ($env !== false && trim($env) !== '') {
+        return rtrim(trim($env), '/');
     }
 
-    $raw = @file_get_contents($file);
+    return rtrim(WEBAPP_URL, '/');
+}
+
+
+/* ============================================================
+   DATA DIRECTORY
+   ============================================================ */
+
+if (!is_dir(DATA_DIR)) {
+    @mkdir(DATA_DIR, 0775, true);
+}
+
+
+/* ============================================================
+   JSON STORAGE
+   ============================================================ */
+
+function filePath(string $name): string
+{
+    return DATA_DIR . '/' . $name . '.json';
+}
+
+function readJson(string $name, array $default = []): array
+{
+    $path = filePath($name);
+
+    if (!is_file($path)) {
+        return $default;
+    }
+
+    $raw = @file_get_contents($path);
 
     if ($raw === false || trim($raw) === '') {
-        return [];
+        return $default;
     }
 
     $data = json_decode($raw, true);
 
-    return is_array($data) ? $data : [];
+    return is_array($data) ? $data : $default;
 }
 
-function saveJson(string $file, array $data): bool
+function writeJson(string $name, array $data): bool
 {
+    $path = filePath($name);
+    $tmp  = $path . '.tmp';
+
     $json = json_encode(
         $data,
         JSON_PRETTY_PRINT |
@@ -116,376 +172,407 @@ function saveJson(string $file, array $data): bool
         JSON_UNESCAPED_SLASHES
     );
 
-    return @file_put_contents(
-        $file,
-        $json,
-        LOCK_EX
-    ) !== false;
+    if ($json === false) {
+        return false;
+    }
+
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
+        return false;
+    }
+
+    return @rename($tmp, $path);
 }
 
-function h(string $value): string
-{
-    return htmlspecialchars(
-        $value,
-        ENT_QUOTES | ENT_SUBSTITUTE,
-        'UTF-8'
-    );
-}
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
 
 function now(): int
 {
     return time();
 }
 
-function randomId(int $length = 16): string
+function esc(string $text): string
 {
-    return substr(
-        bin2hex(random_bytes(max(8, (int)ceil($length / 2)))),
-        0,
-        $length
+    return htmlspecialchars(
+        $text,
+        ENT_QUOTES | ENT_SUBSTITUTE,
+        'UTF-8'
     );
 }
 
-function isAdmin(int|string $id): bool
+function fmtDate(int $timestamp): string
 {
-    return (int)$id === ADMIN_ID;
+    if ($timestamp <= 0) {
+        return 'Not active';
+    }
+
+    return date('d M Y, h:i A', $timestamp);
 }
 
-function isPrivateChat(array $chat): bool
+function safeInt(mixed $value): int
 {
-    return ($chat['type'] ?? '') === 'private';
+    return (int)$value;
 }
 
-function isGroupChat(array $chat): bool
+function jsonReply(array $data): void
 {
-    return in_array(
-        $chat['type'] ?? '',
-        ['group', 'supergroup', 'channel'],
-        true
+    header('Content-Type: application/json; charset=UTF-8');
+
+    echo json_encode(
+        $data,
+        JSON_UNESCAPED_UNICODE |
+        JSON_UNESCAPED_SLASHES
     );
+
+    exit;
 }
 
-/* =========================================================
+
+/* ============================================================
    TELEGRAM API
-   ========================================================= */
+   ============================================================ */
 
-function telegram(string $method, array $params = []): array
+function tg(string $method, array $params = []): array
 {
-    $token = getenv('BOT_TOKEN') ?: BOT_TOKEN;
+    $token = configBotToken();
 
-    if (
-        $token === '' ||
-        $token === 'PASTE_NEW_BOT_TOKEN_HERE'
-    ) {
+    if ($token === '') {
         return [
             'ok' => false,
             'description' => 'BOT_TOKEN is not configured'
         ];
     }
 
-    $url = 'https://api.telegram.org/bot' .
-        $token . '/' . $method;
+    $url =
+        'https://api.telegram.org/bot' .
+        $token .
+        '/' .
+        $method;
 
     $ch = curl_init($url);
+
+    if ($ch === false) {
+        return [
+            'ok' => false,
+            'description' => 'Unable to initialize cURL'
+        ];
+    }
 
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $params,
         CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT => 35,
-        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_TIMEOUT => HTTP_TIMEOUT,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_USERAGENT => 'MAYAMUSIC/1.0'
+    ]);
+
+    $body = curl_exec($ch);
+    $error = curl_error($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+    curl_close($ch);
+
+    if ($body === false) {
+        return [
+            'ok' => false,
+            'http_code' => $http,
+            'description' => $error ?: 'Telegram request failed'
+        ];
+    }
+
+    $data = json_decode($body, true);
+
+    if (!is_array($data)) {
+        return [
+            'ok' => false,
+            'http_code' => $http,
+            'description' => 'Invalid Telegram JSON response'
+        ];
+    }
+
+    $data['http_code'] = $http;
+
+    return $data;
+}
+
+function sendMsg(
+    int|string $chatId,
+    string $text,
+    array $extra = []
+): array {
+    return tg(
+        'sendMessage',
+        array_merge(
+            [
+                'chat_id' => $chatId,
+                'text' => $text,
+                'parse_mode' => 'HTML',
+                'disable_web_page_preview' => true
+            ],
+            $extra
+        )
+    );
+}
+
+function editMsg(
+    int|string $chatId,
+    int $messageId,
+    string $text,
+    array $extra = []
+): array {
+    return tg(
+        'editMessageText',
+        array_merge(
+            [
+                'chat_id' => $chatId,
+                'message_id' => $messageId,
+                'text' => $text,
+                'parse_mode' => 'HTML',
+                'disable_web_page_preview' => true
+            ],
+            $extra
+        )
+    );
+}
+
+function answerCb(
+    string $id,
+    string $text = '',
+    bool $alert = false
+): void {
+    tg(
+        'answerCallbackQuery',
+        [
+            'callback_query_id' => $id,
+            'text' => $text,
+            'show_alert' => $alert ? 'true' : 'false'
+        ]
+    );
+}
+
+function kb(array $rows): string
+{
+    return json_encode(
+        ['inline_keyboard' => $rows],
+        JSON_UNESCAPED_UNICODE |
+        JSON_UNESCAPED_SLASHES
+    );
+}
+
+
+/* ============================================================
+   USER SYSTEM
+   ============================================================ */
+
+function isAdmin(int $uid): bool
+{
+    return $uid === ADMIN_ID;
+}
+
+function userRecord(int $uid): array
+{
+    $users = readJson('users');
+
+    $key = (string)$uid;
+
+    if (!isset($users[$key])) {
+        $users[$key] = [
+            'id' => $uid,
+            'created_at' => now(),
+            'last_seen' => now(),
+            'premium_until' => 0,
+            'username' => '',
+            'first_name' => ''
+        ];
+    }
+
+    $users[$key]['last_seen'] = now();
+
+    writeJson('users', $users);
+
+    return $users[$key];
+}
+
+function updateUser(
+    int $uid,
+    array $patch
+): array {
+    $users = readJson('users');
+
+    $key = (string)$uid;
+
+    $user = $users[$key] ?? [
+        'id' => $uid,
+        'created_at' => now(),
+        'premium_until' => 0
+    ];
+
+    $user = array_merge(
+        $user,
+        $patch,
+        [
+            'last_seen' => now()
+        ]
+    );
+
+    $users[$key] = $user;
+
+    writeJson('users', $users);
+
+    return $user;
+}
+
+function premiumUntil(int $uid): int
+{
+    $user = userRecord($uid);
+
+    return (int)($user['premium_until'] ?? 0);
+}
+
+function premiumActive(int $uid): bool
+{
+    /*
+     * ADMIN = ALWAYS ACTIVE
+     */
+    if (isAdmin($uid)) {
+        return true;
+    }
+
+    return premiumUntil($uid) > now();
+}
+
+function privateAccess(int $uid): bool
+{
+    return premiumActive($uid);
+}
+
+
+/* ============================================================
+   MAIN KEYBOARD
+   ============================================================ */
+
+function mainKeyboard(int $uid): string
+{
+    $rows = [
+        [
+            [
+                'text' => '🔎 Search Music',
+                'callback_data' => 'search'
+            ],
+            [
+                'text' => '▶️ Player',
+                'callback_data' => 'player'
+            ]
+        ],
+        [
+            [
+                'text' => '⭐ Premium',
+                'callback_data' => 'premium'
+            ],
+            [
+                'text' => '🎟 Redeem',
+                'callback_data' => 'redeem'
+            ]
+        ],
+        [
+            [
+                'text' => '👤 Account',
+                'callback_data' => 'account'
+            ],
+            [
+                'text' => '💬 Support',
+                'url' =>
+                    'https://t.me/' .
+                    ltrim(SUPPORT_USERNAME, '@')
+            ]
+        ]
+    ];
+
+    if (isAdmin($uid)) {
+        $rows[] = [
+            [
+                'text' => '🛠 Admin Panel',
+                'callback_data' => 'admin'
+            ]
+        ];
+    }
+
+    return kb($rows);
+}
+
+
+/* ============================================================
+   MUSIC API
+   ============================================================ */
+
+function httpGetJson(
+    string $url,
+    int $timeout = HTTP_TIMEOUT
+): array {
+    $ch = curl_init($url);
+
+    if ($ch === false) {
+        return [
+            'ok' => false,
+            'http_code' => 0,
+            'error' => 'cURL init failed',
+            'data' => null
+        ];
+    }
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_CONNECTTIMEOUT => API_CONNECT_TIMEOUT,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_USERAGENT => 'MAYAMUSIC/1.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/json'
         ]
     ]);
 
-    $response = curl_exec($ch);
+    $body = curl_exec($ch);
 
-    if ($response === false) {
-        $error = curl_error($ch);
-        curl_close($ch);
+    $error = curl_error($ch);
 
-        logMessage('Telegram cURL error: ' . $error);
-
-        return [
-            'ok' => false,
-            'description' => $error
-        ];
-    }
+    $httpCode = (int)curl_getinfo(
+        $ch,
+        CURLINFO_HTTP_CODE
+    );
 
     curl_close($ch);
 
-    $data = json_decode($response, true);
+    if ($body === false) {
+        return [
+            'ok' => false,
+            'http_code' => $httpCode,
+            'error' => $error ?: 'HTTP request failed',
+            'data' => null
+        ];
+    }
+
+    $data = json_decode($body, true);
 
     if (!is_array($data)) {
         return [
             'ok' => false,
-            'description' => 'Invalid Telegram response'
+            'http_code' => $httpCode,
+            'error' => 'Invalid JSON response',
+            'data' => null,
+            'raw' => substr($body, 0, 1000)
         ];
     }
-
-    return $data;
-}
-
-function sendMessage(
-    int|string $chatId,
-    string $text,
-    ?array $keyboard = null,
-    string $parseMode = 'HTML'
-): array {
-    $params = [
-        'chat_id' => $chatId,
-        'text' => $text,
-        'disable_web_page_preview' => true
-    ];
-
-    if ($parseMode !== '') {
-        $params['parse_mode'] = $parseMode;
-    }
-
-    if ($keyboard !== null) {
-        $params['reply_markup'] = json_encode(
-            $keyboard,
-            JSON_UNESCAPED_UNICODE |
-            JSON_UNESCAPED_SLASHES
-        );
-    }
-
-    return telegram('sendMessage', $params);
-}
-
-function answerCallback(
-    string $callbackId,
-    string $text = '',
-    bool $alert = false
-): array {
-    return telegram('answerCallbackQuery', [
-        'callback_query_id' => $callbackId,
-        'text' => $text,
-        'show_alert' => $alert
-    ]);
-}
-
-function editMessage(
-    int|string $chatId,
-    int $messageId,
-    string $text,
-    ?array $keyboard = null
-): array {
-    $params = [
-        'chat_id' => $chatId,
-        'message_id' => $messageId,
-        'text' => $text,
-        'parse_mode' => 'HTML',
-        'disable_web_page_preview' => true
-    ];
-
-    if ($keyboard !== null) {
-        $params['reply_markup'] = json_encode(
-            $keyboard,
-            JSON_UNESCAPED_UNICODE |
-            JSON_UNESCAPED_SLASHES
-        );
-    }
-
-    return telegram('editMessageText', $params);
-}
-
-/* =========================================================
-   USERS
-   ========================================================= */
-
-function getUser(int $userId): array
-{
-    $users = loadJson(USERS_FILE);
-
-    $key = (string)$userId;
-
-    if (!isset($users[$key])) {
-        $users[$key] = [
-            'id' => $userId,
-            'username' => '',
-            'first_name' => '',
-            'premium_until' => 0,
-            'created_at' => now(),
-            'last_seen' => now()
-        ];
-
-        saveJson(USERS_FILE, $users);
-    }
-
-    return $users[$key];
-}
-
-function saveUser(array $user): void
-{
-    $users = loadJson(USERS_FILE);
-
-    $users[(string)$user['id']] = $user;
-
-    saveJson(USERS_FILE, $users);
-}
-
-function updateTelegramUser(array $from): array
-{
-    $id = (int)($from['id'] ?? 0);
-
-    $user = getUser($id);
-
-    $user['username'] = $from['username'] ?? '';
-    $user['first_name'] = $from['first_name'] ?? '';
-    $user['last_seen'] = now();
-
-    saveUser($user);
-
-    return $user;
-}
-
-function premiumActive(array $user): bool
-{
-    return (int)($user['premium_until'] ?? 0) > now();
-}
-
-function premiumUntilText(array $user): string
-{
-    $until = (int)($user['premium_until'] ?? 0);
-
-    if ($until <= now()) {
-        return 'Not active';
-    }
-
-    return date('d M Y, h:i A', $until);
-}
-
-function activatePremium(
-    int $userId,
-    int $days = PREMIUM_DAYS
-): array {
-    $user = getUser($userId);
-
-    $current = max(
-        now(),
-        (int)($user['premium_until'] ?? 0)
-    );
-
-    $user['premium_until'] =
-        $current + ($days * 86400);
-
-    saveUser($user);
-
-    return $user;
-}
-
-/* =========================================================
-   KEY SYSTEM
-   ========================================================= */
-
-function generateRedeemKey(int $days): array
-{
-    $keys = loadJson(KEYS_FILE);
-
-    do {
-        $key =
-            'MAYA-' .
-            strtoupper(randomId(5)) .
-            '-' .
-            strtoupper(randomId(5));
-    } while (isset($keys[$key]));
-
-    $keys[$key] = [
-        'key' => $key,
-        'days' => $days,
-        'created_at' => now(),
-        'created_by' => ADMIN_ID,
-        'used' => false,
-        'used_by' => null,
-        'used_at' => null
-    ];
-
-    saveJson(KEYS_FILE, $keys);
-
-    return $keys[$key];
-}
-
-function redeemKey(
-    int $userId,
-    string $rawKey
-): array {
-    $key = strtoupper(trim($rawKey));
-
-    $keys = loadJson(KEYS_FILE);
-
-    if (!isset($keys[$key])) {
-        return [
-            'ok' => false,
-            'message' => '❌ Invalid redeem key.'
-        ];
-    }
-
-    if (($keys[$key]['used'] ?? false) === true) {
-        return [
-            'ok' => false,
-            'message' => '❌ This key has already been used.'
-        ];
-    }
-
-    $days = max(
-        1,
-        (int)($keys[$key]['days'] ?? 30)
-    );
-
-    $user = activatePremium($userId, $days);
-
-    $keys[$key]['used'] = true;
-    $keys[$key]['used_by'] = $userId;
-    $keys[$key]['used_at'] = now();
-
-    saveJson(KEYS_FILE, $keys);
 
     return [
         'ok' => true,
-        'message' =>
-            "✅ <b>Premium Activated</b>\n\n" .
-            "Plan: {$days} days\n" .
-            "Valid until: <b>" .
-            h(premiumUntilText($user)) .
-            "</b>"
+        'http_code' => $httpCode,
+        'error' => '',
+        'data' => $data
     ];
-}
-
-/* =========================================================
-   MUSIC API
-   ========================================================= */
-
-function httpGet(string $url, int $timeout = 20): ?string
-{
-    $ch = curl_init($url);
-
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_CONNECTTIMEOUT => 8,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_USERAGENT => 'MAYAMUSIC/1.0'
-    ]);
-
-    $data = curl_exec($ch);
-
-    if ($data === false) {
-        logMessage(
-            'HTTP error: ' . curl_error($ch)
-        );
-
-        curl_close($ch);
-
-        return null;
-    }
-
-    curl_close($ch);
-
-    return $data;
 }
 
 function searchMusic(string $query): array
@@ -498,144 +585,155 @@ function searchMusic(string $query): array
 
     $url =
         MUSIC_API .
-        urlencode($query);
+        rawurlencode($query);
 
-    $raw = httpGet($url, 20);
+    $response = httpGetJson($url);
 
-    if ($raw === null) {
+    if (
+        !($response['ok'] ?? false) ||
+        !is_array($response['data'] ?? null)
+    ) {
         return [];
     }
 
-    $data = json_decode($raw, true);
+    $data = $response['data'];
 
-    if (!is_array($data)) {
+    if (
+        empty($data['results']) ||
+        !is_array($data['results'])
+    ) {
         return [];
     }
 
-    $results = $data['results'] ?? [];
+    $results = [];
 
-    if (!is_array($results)) {
-        return [];
-    }
-
-    $clean = [];
-
-    foreach ($results as $item) {
+    foreach ($data['results'] as $item) {
         if (!is_array($item)) {
             continue;
         }
 
-        $title = trim(
-            (string)($item['title'] ?? '')
-        );
+        $download =
+            trim((string)(
+                $item['download_url'] ?? ''
+            ));
 
-        $artist = trim(
-            (string)($item['artists'] ?? '')
-        );
-
-        $download = trim(
-            (string)($item['download_url'] ?? '')
-        );
-
-        if ($title === '' || $download === '') {
+        if ($download === '') {
             continue;
         }
 
-        $clean[] = [
-            'title' => $title,
-            'artists' => $artist !== ''
-                ? $artist
-                : 'Unknown Artist',
-            'album' => (string)(
-                $item['album'] ?? ''
-            ),
-            'duration' => (string)(
-                $item['duration'] ?? ''
-            ),
-            'download_url' => $download
+        /*
+         * IMPORTANT:
+         * API FIELD IS "artists", NOT "artist"
+         */
+
+        $results[] = [
+            'title' =>
+                trim((string)(
+                    $item['title'] ??
+                    'Unknown Title'
+                )),
+
+            'artists' =>
+                trim((string)(
+                    $item['artists'] ??
+                    'Unknown Artist'
+                )),
+
+            'album' =>
+                trim((string)(
+                    $item['album'] ?? ''
+                )),
+
+            'duration' =>
+                trim((string)(
+                    $item['duration'] ?? ''
+                )),
+
+            'download_url' =>
+                $download
         ];
     }
 
-    return $clean;
+    return $results;
 }
 
-/* =========================================================
-   ARTWORK
-   ========================================================= */
 
-function getArtwork(
+/* ============================================================
+   ARTWORK
+   ============================================================ */
+
+function artwork(
     string $title,
-    string $artist = ''
+    string $artist
 ): string {
-    $term = trim(
-        $title . ' ' . $artist
+    $term = rawurlencode(
+        trim($title . ' ' . $artist)
     );
 
     $url =
-        'https://itunes.apple.com/search?' .
-        http_build_query([
-            'term' => $term,
-            'media' => 'music',
-            'entity' => 'song',
-            'limit' => 1
-        ]);
+        ITUNES_API .
+        '?term=' .
+        $term .
+        '&entity=song&limit=1';
 
-    $raw = httpGet($url, 12);
+    $response = httpGetJson($url, 10);
 
-    if ($raw !== null) {
-        $data = json_decode($raw, true);
-
-        if (
-            is_array($data) &&
-            !empty($data['results'][0])
-        ) {
-            $art = (string)(
-                $data['results'][0]['artworkUrl100'] ?? ''
-            );
-
-            if ($art !== '') {
-                return str_replace(
-                    '100x100bb',
-                    '600x600bb',
-                    $art
-                );
-            }
-        }
+    if (!($response['ok'] ?? false)) {
+        return '';
     }
 
-    return '';
+    $data = $response['data'] ?? [];
+
+    if (!is_array($data)) {
+        return '';
+    }
+
+    $image =
+        $data['results'][0]['artworkUrl100']
+        ?? '';
+
+    if ($image === '') {
+        return '';
+    }
+
+    return str_replace(
+        '100x100bb',
+        '600x600bb',
+        $image
+    );
 }
 
-/* =========================================================
+
+/* ============================================================
    LYRICS
-   ========================================================= */
+   ============================================================ */
 
 function getLyrics(
     string $title,
-    string $artist = ''
+    string $artist
 ): array {
     $url =
-        'https://lrclib.net/api/search?' .
-        http_build_query([
-            'track_name' => $title,
-            'artist_name' => $artist
-        ]);
+        LRCLIB_API .
+        '?track_name=' .
+        rawurlencode($title) .
+        '&artist_name=' .
+        rawurlencode($artist);
 
-    $raw = httpGet($url, 15);
+    $response = httpGetJson($url, 12);
 
-    if ($raw === null) {
+    if (!($response['ok'] ?? false)) {
         return [
-            'plain' => '',
-            'synced' => ''
+            'synced' => '',
+            'plain' => ''
         ];
     }
 
-    $data = json_decode($raw, true);
+    $data = $response['data'];
 
     if (!is_array($data)) {
         return [
-            'plain' => '',
-            'synced' => ''
+            'synced' => '',
+            'plain' => ''
         ];
     }
 
@@ -644,1369 +742,151 @@ function getLyrics(
             continue;
         }
 
-        $synced = trim(
-            (string)(
+        $synced =
+            trim((string)(
                 $item['syncedLyrics'] ?? ''
-            )
-        );
+            ));
 
-        $plain = trim(
-            (string)(
+        $plain =
+            trim((string)(
                 $item['plainLyrics'] ?? ''
-            )
-        );
+            ));
 
         if ($synced !== '' || $plain !== '') {
             return [
-                'plain' => $plain,
-                'synced' => $synced
+                'synced' => $synced,
+                'plain' => $plain
             ];
         }
     }
 
     return [
-        'plain' => '',
-        'synced' => ''
+        'synced' => '',
+        'plain' => ''
     ];
 }
 
-/* =========================================================
-   PLAYER TOKENS
-   ========================================================= */
 
-function createPlayer(
-    int $userId,
-    array $songs,
-    int $index = 0
+/* ============================================================
+   SEARCH SESSIONS
+   ============================================================ */
+
+function createSearchSession(
+    int $uid,
+    array $results
 ): string {
-    $players = loadJson(PLAYERS_FILE);
+    $searches = readJson('searches');
 
-    $token = randomId(32);
+    $id = bin2hex(
+        random_bytes(12)
+    );
 
-    $players[$token] = [
-        'user_id' => $userId,
-        'songs' => array_values($songs),
-        'index' => max(
-            0,
-            min(
-                $index,
-                max(0, count($songs) - 1)
-            )
-        ),
-        'created_at' => now()
+    $searches[$id] = [
+        'user_id' => $uid,
+        'results' => $results,
+        'created_at' => now(),
+        'expires_at' => now() + 1800
     ];
 
-    saveJson(PLAYERS_FILE, $players);
+    writeJson('searches', $searches);
+
+    return $id;
+}
+
+
+/* ============================================================
+   PLAYER TOKEN
+   ============================================================ */
+
+function createPlayerToken(
+    array $song,
+    array $queue
+): string {
+    $players = readJson('players');
+
+    $token = bin2hex(
+        random_bytes(18)
+    );
+
+    $players[$token] = [
+        'song' => $song,
+        'queue' => $queue,
+        'created_at' => now(),
+        'expires_at' => now() + 86400
+    ];
+
+    writeJson('players', $players);
 
     return $token;
 }
 
-function getPlayer(string $token): ?array
-{
-    $players = loadJson(PLAYERS_FILE);
-
-    if (!isset($players[$token])) {
-        return null;
-    }
-
-    return $players[$token];
-}
-
-/* =========================================================
-   URLS / KEYBOARDS
-   ========================================================= */
-
 function playerUrl(string $token): string
 {
-    return WEBAPP_URL .
-        '?action=player&token=' .
-        urlencode($token);
+    return configWebAppUrl() .
+        '?mini=1&token=' .
+        rawurlencode($token);
 }
 
-function mainKeyboard(bool $premium = false): array
+
+/* ============================================================
+   CLEAN OLD DATA
+   ============================================================ */
+
+function cleanExpiredData(): void
 {
-    return [
-        'inline_keyboard' => [
-            [
-                [
-                    'text' => '🎵 Search Music',
-                    'callback_data' => 'search'
-                ],
-                [
-                    'text' => '▶️ Player',
-                    'callback_data' => 'player'
-                ]
-            ],
-            [
-                [
-                    'text' => '💎 Premium',
-                    'callback_data' => 'premium'
-                ],
-                [
-                    'text' => '👤 Account',
-                    'callback_data' => 'account'
-                ]
-            ],
-            [
-                [
-                    'text' => '🔑 Redeem',
-                    'callback_data' => 'redeem'
-                ],
-                [
-                    'text' => '🎧 Queue',
-                    'callback_data' => 'queue'
-                ]
-            ],
-            [
-                [
-                    'text' => '🆘 Support',
-                    'url' =>
-                        'https://t.me/' .
-                        ltrim(SUPPORT_USERNAME, '@')
-                ]
-            ]
-        ]
-    ];
-}
-
-function premiumKeyboard(): array
-{
-    $upiLink =
-        'upi://pay?' .
-        http_build_query([
-            'pa' => UPI_ID,
-            'pn' => UPI_NAME,
-            'am' => number_format(
-                MONTHLY_PRICE,
-                2,
-                '.',
-                ''
-            ),
-            'cu' => 'INR',
-            'tn' => BOT_NAME . ' Premium'
-        ]);
-
-    return [
-        'inline_keyboard' => [
-            [
-                [
-                    'text' =>
-                        '💳 Pay ₹' .
-                        MONTHLY_PRICE,
-                    'url' => $upiLink
-                ]
-            ],
-            [
-                [
-                    'text' =>
-                        '🧾 Submit UTR',
-                    'callback_data' => 'submitutr'
-                ]
-            ],
-            [
-                [
-                    'text' =>
-                        '👤 Account',
-                    'callback_data' => 'account'
-                ]
-            ]
-        ]
-    ];
-}
-
-/* =========================================================
-   PAYMENT SYSTEM
-   ========================================================= */
-
-function createPayment(int $userId): array
-{
-    $payments = loadJson(PAYMENTS_FILE);
-
-    $id =
-        'PAY-' .
-        strtoupper(randomId(8));
-
-    $payments[$id] = [
-        'id' => $id,
-        'user_id' => $userId,
-        'amount' => MONTHLY_PRICE,
-        'status' => 'pending',
-        'utr' => '',
-        'created_at' => now(),
-        'updated_at' => now()
-    ];
-
-    saveJson(PAYMENTS_FILE, $payments);
-
-    return $payments[$id];
-}
-
-function getPayment(string $id): ?array
-{
-    $payments = loadJson(PAYMENTS_FILE);
-
-    return $payments[$id] ?? null;
-}
-
-function savePayment(array $payment): void
-{
-    $payments = loadJson(PAYMENTS_FILE);
-
-    $payments[$payment['id']] = $payment;
-
-    saveJson(PAYMENTS_FILE, $payments);
-}
-
-function submitUtr(
-    int $userId,
-    string $paymentId,
-    string $utr
-): bool {
-    $payment = getPayment($paymentId);
-
-    if ($payment === null) {
-        return false;
-    }
-
-    if ((int)$payment['user_id'] !== $userId) {
-        return false;
-    }
-
-    if (($payment['status'] ?? '') !== 'pending') {
-        return false;
-    }
-
-    $utr = trim($utr);
-
-    if ($utr === '' || strlen($utr) > 100) {
-        return false;
-    }
-
-    $payment['utr'] = $utr;
-    $payment['status'] = 'waiting_review';
-    $payment['updated_at'] = now();
-
-    savePayment($payment);
-
-    return true;
-}
-
-function approvePayment(string $paymentId): bool
-{
-    $payment = getPayment($paymentId);
-
-    if ($payment === null) {
-        return false;
-    }
-
-    if (
-        !in_array(
-            $payment['status'] ?? '',
-            ['pending', 'waiting_review'],
-            true
-        )
-    ) {
-        return false;
-    }
-
-    $payment['status'] = 'approved';
-    $payment['updated_at'] = now();
-
-    savePayment($payment);
-
-    $user = activatePremium(
-        (int)$payment['user_id'],
-        PREMIUM_DAYS
-    );
-
-    sendMessage(
-        (int)$payment['user_id'],
-        "🎉 <b>Premium Activated!</b>\n\n" .
-        "Plan: ₹" . MONTHLY_PRICE . " / " .
-        PREMIUM_DAYS . " days\n" .
-        "Valid until: <b>" .
-        h(premiumUntilText($user)) .
-        "</b>\n\n" .
-        "Enjoy MAYAMUSIC Premium 🎵"
-    );
-
-    return true;
-}
-
-function declinePayment(string $paymentId): bool
-{
-    $payment = getPayment($paymentId);
-
-    if ($payment === null) {
-        return false;
-    }
-
-    $payment['status'] = 'declined';
-    $payment['updated_at'] = now();
-
-    savePayment($payment);
-
-    sendMessage(
-        (int)$payment['user_id'],
-        "❌ <b>Payment Declined</b>\n\n" .
-        "Your payment request was not approved.\n" .
-        "Please contact " .
-        h(SUPPORT_USERNAME) .
-        " if you believe this is an error."
-    );
-
-    return true;
-}
-
-/* =========================================================
-   PREMIUM PAGE
-   ========================================================= */
-
-function premiumPage(int $userId): string
-{
-    $payment = createPayment($userId);
-
-    $upiLink =
-        'upi://pay?' .
-        http_build_query([
-            'pa' => UPI_ID,
-            'pn' => UPI_NAME,
-            'am' => number_format(
-                MONTHLY_PRICE,
-                2,
-                '.',
-                ''
-            ),
-            'cu' => 'INR',
-            'tn' => BOT_NAME . ' ' . $payment['id']
-        ]);
-
-    return '<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
- content="width=device-width,initial-scale=1">
-<title>MAYAMUSIC Premium</title>
-<style>
-*{box-sizing:border-box}
-body{
- margin:0;
- font-family:system-ui,-apple-system,BlinkMacSystemFont,
- "Segoe UI",sans-serif;
- background:
- radial-gradient(circle at 20% 0%,#34205d 0,#11121c 40%,#07080d 100%);
- color:#fff;
- min-height:100vh;
- padding:20px;
-}
-.card{
- max-width:520px;
- margin:30px auto;
- padding:26px;
- border:1px solid rgba(255,255,255,.12);
- border-radius:28px;
- background:rgba(255,255,255,.07);
- backdrop-filter:blur(22px);
- box-shadow:0 30px 80px rgba(0,0,0,.4);
-}
-.logo{
- width:68px;height:68px;
- display:grid;place-items:center;
- border-radius:20px;
- background:linear-gradient(135deg,#9b5cff,#ff4f9a);
- font-size:30px;
- margin-bottom:18px;
-}
-h1{margin:0 0 7px;font-size:30px}
-.sub{opacity:.7;line-height:1.5}
-.price{
- font-size:46px;
- font-weight:800;
- margin:24px 0 4px;
-}
-.small{opacity:.6}
-.feature{
- padding:13px 0;
- border-bottom:1px solid rgba(255,255,255,.08);
-}
-.btn{
- display:block;
- width:100%;
- border:0;
- border-radius:16px;
- padding:16px;
- margin-top:18px;
- text-align:center;
- text-decoration:none;
- color:white;
- background:linear-gradient(135deg,#8f52ff,#ff4e9c);
- font-weight:800;
- font-size:16px;
-}
-.form{
- margin-top:22px;
-}
-input{
- width:100%;
- padding:15px;
- border-radius:14px;
- border:1px solid rgba(255,255,255,.14);
- background:rgba(0,0,0,.25);
- color:#fff;
- outline:none;
-}
-button{
- width:100%;
- border:0;
- padding:15px;
- margin-top:10px;
- border-radius:14px;
- background:#fff;
- color:#111;
- font-weight:800;
-}
-.notice{
- margin-top:16px;
- padding:14px;
- border-radius:14px;
- background:rgba(255,255,255,.06);
- color:#ddd;
- font-size:13px;
- line-height:1.5;
-}
-</style>
-</head>
-<body>
-<div class="card">
-<div class="logo">🎵</div>
-<h1>MAYAMUSIC Premium</h1>
-<div class="sub">
-Unlock the private-user premium music experience.
-</div>
-
-<div class="price">₹49</div>
-<div class="small">30 days access</div>
-
-<div class="feature">✓ Full music streaming</div>
-<div class="feature">✓ Telegram Mini App player</div>
-<div class="feature">✓ Album artwork</div>
-<div class="feature">✓ Lyrics</div>
-<div class="feature">✓ Auto-next queue</div>
-<div class="feature">✓ Previous / Next controls</div>
-<div class="feature">✓ Saved player session</div>
-<div class="feature">✓ Premium account access</div>
-
-<a class="btn"
- href="' . h($upiLink) . '">
-💳 Open UPI & Pay ₹49
-</a>
-
-<div class="form">
-<form method="post"
- action="?action=submit_utr">
-<input type="hidden"
- name="payment_id"
- value="' . h($payment['id']) . '">
-
-<input
- name="utr"
- maxlength="100"
- placeholder="Enter UTR / Transaction ID"
- required>
-
-<button type="submit">
-Submit Payment
-</button>
-</form>
-</div>
-
-<div class="notice">
-UPI ID: <b>' .
-h(UPI_ID) .
-'</b><br>
-Payment is manually verified by the administrator.
-After approval, premium will be activated for 30 days.
-</div>
-</div>
-</body>
-</html>';
-}
-
-/* =========================================================
-   PLAYER PAGE
-   ========================================================= */
-
-function playerPage(string $token): string
-{
-    $player = getPlayer($token);
-
-    if ($player === null) {
-        return '<h2>Player session expired.</h2>';
-    }
-
-    $songs = $player['songs'] ?? [];
-
-    $safeSongs = [];
-
-    foreach ($songs as $song) {
-        $title = (string)(
-            $song['title'] ?? ''
-        );
-
-        $artist = (string)(
-            $song['artists'] ?? ''
-        );
-
-        $safeSongs[] = [
-            'title' => $title,
-            'artist' => $artist,
-            'album' => (string)(
-                $song['album'] ?? ''
-            ),
-            'duration' => (string)(
-                $song['duration'] ?? ''
-            ),
-            'url' => (string)(
-                $song['download_url'] ?? ''
-            ),
-            'artwork' => getArtwork(
-                $title,
-                $artist
-            )
-        ];
-    }
-
-    $json = json_encode(
-        $safeSongs,
-        JSON_UNESCAPED_UNICODE |
-        JSON_UNESCAPED_SLASHES
-    );
-
-    return '<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
- content="width=device-width,initial-scale=1,
- maximum-scale=1,user-scalable=no">
-<title>MAYAMUSIC Player</title>
-
-<style>
-*{box-sizing:border-box}
-html,body{
- margin:0;
- width:100%;
- min-height:100%;
- background:#08090d;
- color:#fff;
- font-family:system-ui,-apple-system,
- BlinkMacSystemFont,"Segoe UI",sans-serif;
-}
-body{
- overflow-x:hidden;
-}
-.bg{
- position:fixed;
- inset:0;
- background:
- radial-gradient(circle at 50% 10%,
- rgba(151,82,255,.32),transparent 35%),
- radial-gradient(circle at 0% 100%,
- rgba(255,65,145,.16),transparent 40%);
- pointer-events:none;
-}
-.app{
- position:relative;
- max-width:600px;
- min-height:100vh;
- margin:auto;
- padding:20px 18px 30px;
-}
-.top{
- display:flex;
- align-items:center;
- justify-content:space-between;
-}
-.brand{
- font-weight:800;
- letter-spacing:.3px;
-}
-.dot{
- width:8px;height:8px;
- border-radius:50%;
- display:inline-block;
- background:#71ffae;
- margin-right:6px;
- box-shadow:0 0 12px #71ffae;
-}
-.coverWrap{
- margin:45px auto 25px;
- width:min(76vw,330px);
- aspect-ratio:1;
- position:relative;
-}
-.cover{
- width:100%;
- height:100%;
- object-fit:cover;
- border-radius:30px;
- background:#171821;
- box-shadow:
- 0 30px 70px rgba(0,0,0,.5);
-}
-.meta{text-align:center}
-.title{
- font-size:25px;
- font-weight:800;
- white-space:nowrap;
- overflow:hidden;
- text-overflow:ellipsis;
-}
-.artist{
- margin-top:7px;
- color:#a8a9b3;
-}
-.progress{
- margin-top:28px;
-}
-input[type=range]{
- width:100%;
- accent-color:#bd76ff;
-}
-.times{
- display:flex;
- justify-content:space-between;
- color:#888a96;
- font-size:12px;
-}
-.controls{
- display:flex;
- justify-content:center;
- align-items:center;
- gap:28px;
- margin:25px 0;
-}
-.ctrl{
- width:50px;height:50px;
- border:0;
- border-radius:50%;
- background:rgba(255,255,255,.08);
- color:#fff;
- font-size:21px;
-}
-.play{
- width:72px;height:72px;
- background:#fff;
- color:#111;
- font-size:28px;
-}
-.lyrics{
- margin-top:20px;
- min-height:180px;
- padding:22px;
- border-radius:24px;
- background:rgba(255,255,255,.055);
- border:1px solid rgba(255,255,255,.07);
- text-align:center;
- white-space:pre-wrap;
- line-height:1.75;
- color:#d8d8df;
-}
-.status{
- text-align:center;
- color:#888a96;
- font-size:12px;
- margin-top:12px;
-}
-.queue{
- margin-top:20px;
-}
-.qitem{
- padding:13px;
- border-bottom:1px solid rgba(255,255,255,.07);
-}
-</style>
-</head>
-
-<body>
-
-<div class="bg"></div>
-
-<div class="app">
-
-<div class="top">
-<div class="brand">
-<span class="dot"></span>MAYAMUSIC
-</div>
-<div id="state">READY</div>
-</div>
-
-<div class="coverWrap">
-<img id="cover"
- class="cover"
- src=""
- alt="Artwork">
-</div>
-
-<div class="meta">
-<div id="title" class="title">Loading...</div>
-<div id="artist" class="artist"></div>
-</div>
-
-<div class="progress">
-<input id="seek"
- type="range"
- min="0"
- max="100"
- value="0">
-
-<div class="times">
-<span id="current">0:00</span>
-<span id="duration">0:00</span>
-</div>
-</div>
-
-<div class="controls">
-
-<button class="ctrl"
- onclick="previousSong()">
-⏮
-</button>
-
-<button class="ctrl play"
- id="playButton"
- onclick="togglePlay()">
-▶
-</button>
-
-<button class="ctrl"
- onclick="nextSong()">
-⏭
-</button>
-
-</div>
-
-<div class="lyrics" id="lyrics">
-Loading lyrics...
-</div>
-
-<div class="status" id="status">
-Tap play to start
-</div>
-
-</div>
-
-<audio
- id="audio"
- preload="auto"
- playsinline></audio>
-
-<script>
-
-const songs = ' . $json . ';
-let index = ' .
-(int)($player['index'] ?? 0) .
-';
-
-const audio =
-document.getElementById("audio");
-
-const titleEl =
-document.getElementById("title");
-
-const artistEl =
-document.getElementById("artist");
-
-const coverEl =
-document.getElementById("cover");
-
-const lyricsEl =
-document.getElementById("lyrics");
-
-const seekEl =
-document.getElementById("seek");
-
-const currentEl =
-document.getElementById("current");
-
-const durationEl =
-document.getElementById("duration");
-
-const playButton =
-document.getElementById("playButton");
-
-const statusEl =
-document.getElementById("status");
-
-const stateEl =
-document.getElementById("state");
-
-function formatTime(seconds){
- if(!isFinite(seconds)) return "0:00";
-
- const m =
- Math.floor(seconds / 60);
-
- const s =
- Math.floor(seconds % 60)
- .toString()
- .padStart(2,"0");
-
- return m + ":" + s;
-}
-
-async function loadLyrics(song){
-
- lyricsEl.textContent =
- "Loading lyrics...";
-
- const params =
- new URLSearchParams({
-   title:song.title,
-   artist:song.artist
- });
-
- try{
-
-   const response =
-   await fetch(
-     "?action=lyrics&" +
-     params.toString()
-   );
-
-   const data =
-   await response.json();
-
-   if(data.ok){
-
-     lyricsEl.textContent =
-       data.lyrics ||
-       "Lyrics not available.";
-
-   }else{
-
-     lyricsEl.textContent =
-       "Lyrics not available.";
-
-   }
-
- }catch(e){
-
-   lyricsEl.textContent =
-     "Lyrics unavailable.";
-
- }
-}
-
-function loadSong(autoPlay=false){
-
- if(!songs.length) return;
-
- if(index < 0)
-   index = songs.length - 1;
-
- if(index >= songs.length)
-   index = 0;
-
- const song = songs[index];
-
- titleEl.textContent =
-   song.title || "Unknown";
-
- artistEl.textContent =
-   song.artist || "Unknown Artist";
-
- coverEl.src =
-   song.artwork ||
-   "";
-
- audio.src =
-   song.url;
-
- audio.load();
-
- stateEl.textContent =
-   "READY";
-
- statusEl.textContent =
-   "Song " +
-   (index + 1) +
-   " of " +
-   songs.length;
-
- loadLyrics(song);
-
- if(autoPlay){
-
-   const p = audio.play();
-
-   if(p){
-
-     p.catch(() => {
-
-       playButton.textContent =
-         "▶";
-
-       statusEl.textContent =
-         "Tap play to start";
-
-     });
-
-   }
-
- }
-}
-
-function togglePlay(){
-
- if(audio.paused){
-
-   audio.play().then(() => {
-
-     playButton.textContent =
-       "❚❚";
-
-     stateEl.textContent =
-       "PLAYING";
-
-   }).catch(() => {
-
-     statusEl.textContent =
-       "Tap Play again";
-
-   });
-
- }else{
-
-   audio.pause();
-
-   playButton.textContent =
-     "▶";
-
-   stateEl.textContent =
-     "PAUSED";
-
- }
-}
-
-function nextSong(){
-
- index++;
-
- if(index >= songs.length)
-   index = 0;
-
- loadSong(true);
-}
-
-function previousSong(){
-
- index--;
-
- if(index < 0)
-   index = songs.length - 1;
-
- loadSong(true);
-}
-
-audio.addEventListener(
- "play",
- () => {
-
-   playButton.textContent =
-     "❚❚";
-
-   stateEl.textContent =
-     "PLAYING";
-
- }
-);
-
-audio.addEventListener(
- "pause",
- () => {
-
-   playButton.textContent =
-     "▶";
-
-   if(!audio.ended)
-     stateEl.textContent =
-       "PAUSED";
-
- }
-);
-
-audio.addEventListener(
- "timeupdate",
- () => {
-
-   if(audio.duration){
-
-     seekEl.value =
-       (audio.currentTime /
-       audio.duration) * 100;
-
-     currentEl.textContent =
-       formatTime(
-         audio.currentTime
-       );
-
-     durationEl.textContent =
-       formatTime(
-         audio.duration
-       );
-
-   }
-
- }
-);
-
-seekEl.addEventListener(
- "input",
- () => {
-
-   if(audio.duration){
-
-     audio.currentTime =
-       (seekEl.value / 100) *
-       audio.duration;
-
-   }
-
- }
-);
-
-audio.addEventListener(
- "ended",
- () => {
-
-   /*
-    Auto-next:
-    when current song ends,
-    next song automatically starts.
-   */
-
-   nextSong();
-
- }
-);
-
-audio.addEventListener(
- "waiting",
- () => {
-
-   stateEl.textContent =
-     "BUFFERING";
-
- }
-);
-
-audio.addEventListener(
- "playing",
- () => {
-
-   stateEl.textContent =
-     "PLAYING";
-
- }
-);
-
-audio.addEventListener(
- "error",
- () => {
-
-   stateEl.textContent =
-     "ERROR";
-
-   statusEl.textContent =
-     "Unable to play this source.";
-
- }
-);
-
-loadSong(false);
-
-</script>
-
-</body>
-</html>';
-}
-
-/* =========================================================
-   ADMIN PANEL
-   ========================================================= */
-
-function adminPage(int $adminId): string
-{
-    if (!isAdmin($adminId)) {
-        http_response_code(403);
-
-        return 'Access denied';
-    }
-
-    $users = loadJson(USERS_FILE);
-    $payments = loadJson(PAYMENTS_FILE);
-    $keys = loadJson(KEYS_FILE);
-
-    $active = 0;
-
-    foreach ($users as $u) {
-        if (
-            (int)($u['premium_until'] ?? 0) > now()
-        ) {
-            $active++;
+    $now = now();
+
+    foreach ([
+        'players',
+        'searches'
+    ] as $file) {
+        $data = readJson($file);
+
+        $changed = false;
+
+        foreach ($data as $key => $item) {
+            if (
+                isset($item['expires_at']) &&
+                (int)$item['expires_at'] < $now
+            ) {
+                unset($data[$key]);
+                $changed = true;
+            }
+        }
+
+        if ($changed) {
+            writeJson($file, $data);
         }
     }
-
-    $pending = 0;
-
-    foreach ($payments as $p) {
-        if (
-            ($p['status'] ?? '') ===
-            'waiting_review'
-        ) {
-            $pending++;
-        }
-    }
-
-    $unusedKeys = 0;
-
-    foreach ($keys as $k) {
-        if (
-            ($k['used'] ?? false) === false
-        ) {
-            $unusedKeys++;
-        }
-    }
-
-    return '<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
- content="width=device-width,initial-scale=1">
-<title>MAYAMUSIC Admin</title>
-<style>
-body{
- margin:0;
- padding:20px;
- background:#08090d;
- color:#fff;
- font-family:system-ui;
-}
-.wrap{
- max-width:700px;
- margin:auto;
-}
-.card{
- padding:20px;
- margin:12px 0;
- border-radius:22px;
- background:#14151d;
- border:1px solid #262833;
-}
-.grid{
- display:grid;
- grid-template-columns:1fr 1fr;
- gap:12px;
-}
-.stat{
- padding:20px;
- background:#1a1b25;
- border-radius:18px;
-}
-.num{
- font-size:30px;
- font-weight:800;
-}
-button,input{
- width:100%;
- padding:13px;
- margin-top:8px;
- border-radius:12px;
- border:0;
-}
-button{
- background:#9d5cff;
- color:white;
- font-weight:800;
-}
-input{
- background:#090a0f;
- color:white;
- border:1px solid #30313c;
-}
-</style>
-</head>
-<body>
-<div class="wrap">
-
-<h1>MAYAMUSIC Admin</h1>
-
-<div class="grid">
-
-<div class="stat">
-<div>Users</div>
-<div class="num">' .
-count($users) .
-'</div>
-</div>
-
-<div class="stat">
-<div>Premium</div>
-<div class="num">' .
-$active .
-'</div>
-</div>
-
-<div class="stat">
-<div>Pending Payments</div>
-<div class="num">' .
-$pending .
-'</div>
-</div>
-
-<div class="stat">
-<div>Unused Keys</div>
-<div class="num">' .
-$unusedKeys .
-'</div>
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>Generate Redeem Keys</h3>
-
-<form method="post"
- action="?action=admin_generate_keys">
-
-<input
- type="number"
- name="days"
- value="30"
- min="1"
- placeholder="Days">
-
-<input
- type="number"
- name="count"
- value="1"
- min="1"
- max="100"
- placeholder="Number of keys">
-
-<button>
-Generate Keys
-</button>
-
-</form>
-
-</div>
-
-<div class="card">
-
-<h3>Webhook</h3>
-
-<form method="post"
- action="?action=admin_webhook">
-
-<button name="mode"
- value="set">
-Set Webhook
-</button>
-
-<button name="mode"
- value="delete">
-Delete Webhook
-</button>
-
-</form>
-
-</div>
-
-</div>
-</body>
-</html>';
 }
 
-/* =========================================================
-   COMMAND HELP
-   ========================================================= */
 
-function helpText(bool $admin = false): string
-{
-    $text =
-"🎵 <b>MAYAMUSIC Commands</b>
+/* ============================================================
+   SEARCH COMMAND
+   ============================================================ */
 
-<b>User Commands</b>
-
-/start — Open bot
-/help — Commands
-/search SONG — Search music
-/play SONG — Search & play
-/premium — Premium plan
-/account — Account status
-/redeem KEY — Redeem premium
-/queue — Queue
-/support — Support
-/cancel — Cancel current action
-
-<b>Voice Chat Controls</b>
-
-/playcc SONG
-/pausecc
-/resumecc
-/skipcc
-/stopcc
-/leavecc";
-
-    if ($admin) {
-        $text .=
-"
-
-<b>Admin Commands</b>
-
-/stats
-/users
-/pending
-/genkey DAYS
-/genkey DAYS COUNT
-/give USER_ID DAYS
-/revoke USER_ID
-/broadcast TEXT
-/adminapp
-/setwebhook
-/delwebhook";
-    }
-
-    return $text;
-}
-
-/* =========================================================
-   SEARCH MESSAGE
-   ========================================================= */
-
-function sendSearchResults(
-    int $chatId,
-    string $query,
-    bool $checkPremium = true
+function showSearch(
+    int $uid,
+    string $query
 ): void {
-    $user = getUser($chatId);
+    if (!privateAccess($uid)) {
+        sendMsg(
+            $uid,
+            "🔒 <b>Premium required.</b>\n\n" .
+            "Use ⭐ <b>Premium</b> to activate access."
+        );
 
-    if (
-        $checkPremium &&
-        !premiumActive($user)
-    ) {
-        sendMessage(
-            $chatId,
-            "🔒 <b>Premium Required</b>\n\n" .
-            "Private music access requires " .
-            "MAYAMUSIC Premium.\n\n" .
-            "💎 ₹49 / 30 days",
-            premiumKeyboard()
+        return;
+    }
+
+    $query = trim($query);
+
+    if ($query === '') {
+        sendMsg(
+            $uid,
+            "🔎 <b>Search Music</b>\n\n" .
+            "Example:\n" .
+            "<code>/search Tatvadarshi</code>"
         );
 
         return;
@@ -2015,212 +895,577 @@ function sendSearchResults(
     $results = searchMusic($query);
 
     if (!$results) {
-        sendMessage(
-            $chatId,
-            "❌ No music results found.\n\n" .
-            "Try another song name."
+        sendMsg(
+            $uid,
+            "❌ <b>No results found.</b>\n\n" .
+            "Try another song/artist name."
         );
 
         return;
     }
 
-    /*
-     * Limit result list to 10.
-     */
     $results = array_slice(
         $results,
         0,
         10
     );
 
-    $keyboard = [];
+    $session =
+        createSearchSession(
+            $uid,
+            $results
+        );
 
-    foreach ($results as $i => $song) {
+    $buttons = [];
 
-        $label =
-            '▶ ' .
-            $song['title'];
+    foreach ($results as $index => $song) {
+        $title =
+            mb_substr(
+                $song['title'],
+                0,
+                38
+            );
 
-        if (mb_strlen($label) > 55) {
-            $label =
-                mb_substr(
-                    $label,
-                    0,
-                    52
-                ) . '...';
-        }
-
-        $keyboard[] = [[
-            'text' => $label,
-            'callback_data' =>
-                'song:' . $i
-        ]];
+        $buttons[] = [
+            [
+                'text' =>
+                    '▶️ ' . $title,
+                'callback_data' =>
+                    'pick:' .
+                    $session .
+                    ':' .
+                    $index
+            ]
+        ];
     }
 
-    /*
-     * Temporary search cache
-     * for the current user.
-     */
-    $queues = loadJson(QUEUES_FILE);
-
-    $queues[(string)$chatId] = [
-        'query' => $query,
-        'songs' => $results,
-        'updated_at' => now()
-    ];
-
-    saveJson(QUEUES_FILE, $queues);
-
-    sendMessage(
-        $chatId,
-        "🎵 <b>Search Results</b>\n\n" .
-        "Query: <b>" .
-        h($query) .
-        "</b>\n\n" .
-        "Choose a song:",
+    sendMsg(
+        $uid,
+        "<b>🔎 SEARCH RESULTS</b>\n\n" .
+        "Query: <code>" .
+        esc($query) .
+        "</code>\n\n" .
+        "Select a song:",
         [
-            'inline_keyboard' => $keyboard
+            'reply_markup' =>
+                kb($buttons)
         ]
     );
 }
 
-/* =========================================================
-   WEB APP / ACTION ROUTER
-   ========================================================= */
 
-$action = $_GET['action'] ?? '';
+/* ============================================================
+   PREMIUM
+   ============================================================ */
 
-if ($action === 'player') {
+function premiumText(): string
+{
+    return
+        "<b>⭐ MAYAMUSIC PREMIUM</b>\n\n" .
+        "<b>₹" .
+        MONTHLY_PRICE .
+        " / 30 Days</b>\n\n" .
 
-    $token =
-        trim((string)(
-            $_GET['token'] ?? ''
-        ));
+        "🎵 Full music search\n" .
+        "🖼 Album artwork\n" .
+        "🎤 Lyrics\n" .
+        "⏭ Auto-next\n" .
+        "⏮ Previous / Next\n" .
+        "▶️ Telegram Mini Player\n" .
+        "☰ Queue\n" .
+        "🎟 Redeem key support\n" .
+        "👤 Premium account\n\n" .
 
-    if ($token === '') {
-        http_response_code(400);
-        exit('Missing player token');
-    }
+        "<b>UPI ID</b>\n" .
+        "<code>" .
+        esc(UPI_ID) .
+        "</code>\n\n" .
 
-    header(
-        'Content-Type: text/html; charset=utf-8'
-    );
-
-    echo playerPage($token);
-
-    exit;
+        "Payment ke baad UTR submit karein.";
 }
 
-if ($action === 'lyrics') {
+function createPayment(
+    int $uid
+): string {
+    $payments = readJson('payments');
 
-    header(
-        'Content-Type: application/json; charset=utf-8'
+    $id =
+        'PAY-' .
+        date('ymdHis') .
+        '-' .
+        strtoupper(
+            bin2hex(random_bytes(3))
+        );
+
+    $payments[$id] = [
+        'id' => $id,
+        'user_id' => $uid,
+        'amount' => MONTHLY_PRICE,
+        'status' => 'created',
+        'utr' => '',
+        'created_at' => now(),
+        'utr_submitted_at' => 0,
+        'approved_at' => 0,
+        'expires_at' => 0
+    ];
+
+    writeJson(
+        'payments',
+        $payments
     );
 
-    $title =
-        trim((string)(
-            $_GET['title'] ?? ''
-        ));
-
-    $artist =
-        trim((string)(
-            $_GET['artist'] ?? ''
-        ));
-
-    if ($title === '') {
-        echo json_encode([
-            'ok' => false,
-            'lyrics' => ''
-        ]);
-
-        exit;
-    }
-
-    $lyrics =
-        getLyrics($title, $artist);
-
-    echo json_encode([
-        'ok' => true,
-        'lyrics' =>
-            $lyrics['plain'] !== ''
-                ? $lyrics['plain']
-                : (
-                    $lyrics['synced'] !== ''
-                        ? $lyrics['synced']
-                        : ''
-                )
-    ], JSON_UNESCAPED_UNICODE);
-
-    exit;
+    return $id;
 }
 
-if ($action === 'premium') {
-
-    $userId =
-        (int)($_GET['user_id'] ?? 0);
-
-    if ($userId <= 0) {
-        http_response_code(400);
-        exit('Invalid user');
-    }
-
-    header(
-        'Content-Type: text/html; charset=utf-8'
-    );
-
-    echo premiumPage($userId);
-
-    exit;
-}
-
-if ($action === 'submit_utr') {
-
+function sendPremium(int $uid): void
+{
     $paymentId =
-        trim((string)(
-            $_POST['payment_id'] ?? ''
-        ));
+        createPayment($uid);
 
-    $utr =
-        trim((string)(
-            $_POST['utr'] ?? ''
-        ));
+    $upi =
+        'upi://pay?' .
+        'pa=' . rawurlencode(UPI_ID) .
+        '&pn=' . rawurlencode(UPI_NAME) .
+        '&am=' .
+        number_format(
+            MONTHLY_PRICE,
+            2,
+            '.',
+            ''
+        ) .
+        '&cu=INR' .
+        '&tn=' .
+        rawurlencode(
+            BOT_NAME .
+            ' ' .
+            $paymentId
+        );
 
-    $payment =
-        getPayment($paymentId);
+    $buttons = [
+        [
+            [
+                'text' =>
+                    '💳 Pay ₹' .
+                    MONTHLY_PRICE,
+                'url' => $upi
+            ]
+        ],
+        [
+            [
+                'text' =>
+                    '🧾 Submit UTR',
+                'callback_data' =>
+                    'utr:' .
+                    $paymentId
+            ]
+        ],
+        [
+            [
+                'text' =>
+                    '👤 Account',
+                'callback_data' =>
+                    'account'
+            ]
+        ]
+    ];
+
+    sendMsg(
+        $uid,
+        premiumText() .
+        "\n\n<b>Payment ID:</b>\n" .
+        "<code>" .
+        esc($paymentId) .
+        "</code>",
+        [
+            'reply_markup' =>
+                kb($buttons)
+        ]
+    );
+}
+
+
+/* ============================================================
+   ACCOUNT
+   ============================================================ */
+
+function accountText(int $uid): string
+{
+    $user =
+        userRecord($uid);
+
+    if (isAdmin($uid)) {
+        return
+            "<b>👑 ADMIN ACCOUNT</b>\n\n" .
+            "<b>User ID:</b> <code>" .
+            $uid .
+            "</code>\n\n" .
+            "<b>Status:</b> 👑 PERMANENT ACCESS\n\n" .
+            "Premium restriction: <b>DISABLED</b>\n" .
+            "Admin access: <b>ACTIVE</b>";
+    }
+
+    $until =
+        (int)(
+            $user['premium_until']
+            ?? 0
+        );
+
+    $active =
+        $until > now();
+
+    $payments =
+        readJson('payments');
+
+    $lastPayment = null;
+
+    foreach (
+        array_reverse(
+            $payments,
+            true
+        ) as $payment
+    ) {
+        if (
+            (int)(
+                $payment['user_id']
+                ?? 0
+            ) === $uid
+        ) {
+            $lastPayment = $payment;
+            break;
+        }
+    }
+
+    $status =
+        $active
+            ? '🟢 ACTIVE'
+            : '🔴 INACTIVE';
+
+    $valid =
+        $active
+            ? fmtDate($until)
+            : 'Not active';
+
+    return
+        "<b>👤 ACCOUNT</b>\n\n" .
+        "<b>User ID:</b> <code>" .
+        $uid .
+        "</code>\n" .
+        "<b>Status:</b> " .
+        $status .
+        "\n" .
+        "<b>Valid until:</b> " .
+        $valid .
+        "\n" .
+        "<b>Last payment:</b> " .
+        esc(
+            (string)(
+                $lastPayment['status']
+                ?? 'None'
+            )
+        );
+}
+
+
+/* ============================================================
+   REDEEM KEY
+   ============================================================ */
+
+function generateRedeemKey(): string
+{
+    $keys =
+        readJson('keys');
+
+    do {
+        $key =
+            'MAYA-' .
+            strtoupper(
+                substr(
+                    bin2hex(
+                        random_bytes(4)
+                    ),
+                    0,
+                    6
+                )
+            ) .
+            '-' .
+            strtoupper(
+                substr(
+                    bin2hex(
+                        random_bytes(4)
+                    ),
+                    0,
+                    6
+                )
+            ) .
+            '-' .
+            strtoupper(
+                substr(
+                    bin2hex(
+                        random_bytes(4)
+                    ),
+                    0,
+                    6
+                )
+            );
+    } while (
+        isset($keys[$key])
+    );
+
+    return $key;
+}
+
+function createRedeemKey(
+    int $days,
+    int $adminId
+): string {
+    $keys =
+        readJson('keys');
+
+    $key =
+        generateRedeemKey();
+
+    $keys[$key] = [
+        'key' => $key,
+        'status' => 'unused',
+        'duration_days' => $days,
+        'created_at' => now(),
+        'expires_at' =>
+            now() +
+            ($days * 86400),
+        'created_by' => $adminId,
+        'redeemed_by' => 0,
+        'redeemed_at' => 0
+    ];
+
+    writeJson(
+        'keys',
+        $keys
+    );
+
+    return $key;
+}
+
+function redeemKey(
+    int $uid,
+    string $input
+): void {
+    $key =
+        strtoupper(
+            trim($input)
+        );
+
+    if ($key === '') {
+        sendMsg(
+            $uid,
+            "🎟 <b>Redeem Key</b>\n\n" .
+            "Use:\n" .
+            "<code>/redeem MAYA-XXXXXX-XXXXXX-XXXXXX</code>"
+        );
+
+        return;
+    }
+
+    $keys =
+        readJson('keys');
+
+    if (!isset($keys[$key])) {
+        sendMsg(
+            $uid,
+            "❌ Invalid redeem key."
+        );
+
+        return;
+    }
+
+    $item =
+        $keys[$key];
 
     if (
-        $payment === null ||
-        $utr === ''
+        ($item['status'] ?? '')
+        !== 'unused'
     ) {
-        http_response_code(400);
-        exit('Invalid payment');
+        sendMsg(
+            $uid,
+            "❌ This key has already been used."
+        );
+
+        return;
     }
 
-    if (submitUtr(
-        (int)$payment['user_id'],
-        $paymentId,
-        $utr
-    )) {
+    if (
+        (int)(
+            $item['expires_at']
+            ?? 0
+        ) <= now()
+    ) {
+        sendMsg(
+            $uid,
+            "❌ This key has expired."
+        );
 
-        $userId =
-            (int)$payment['user_id'];
+        return;
+    }
 
-        sendMessage(
-            ADMIN_ID,
-            "💰 <b>New Payment Review</b>\n\n" .
-            "Payment: <code>" .
-            h($paymentId) .
-            "</code>\n" .
-            "User ID: <code>" .
-            $userId .
-            "</code>\n" .
-            "Amount: ₹" .
-            MONTHLY_PRICE .
-            "\nUTR: <code>" .
-            h($utr) .
-            "</code>",
-            [
-                'inline_keyboard' => [
+    $current =
+        premiumUntil($uid);
+
+    /*
+     * KEY EXPIRY IS THE ACCESS END DATE
+     */
+    $until =
+        max(
+            $current,
+            (int)$item['expires_at']
+        );
+
+    updateUser(
+        $uid,
+        [
+            'premium_until' =>
+                $until
+        ]
+    );
+
+    $keys[$key]['status'] =
+        'used';
+
+    $keys[$key]['redeemed_by'] =
+        $uid;
+
+    $keys[$key]['redeemed_at'] =
+        now();
+
+    writeJson(
+        'keys',
+        $keys
+    );
+
+    sendMsg(
+        $uid,
+        "✅ <b>Key Redeemed</b>\n\n" .
+        "⭐ Premium active until:\n" .
+        "<b>" .
+        fmtDate($until) .
+        "</b>",
+        [
+            'reply_markup' =>
+                kb([
+                    [
+                        [
+                            'text' =>
+                                '👤 Account',
+                            'callback_data' =>
+                                'account'
+                        ],
+                        [
+                            'text' =>
+                                '🔎 Search',
+                            'callback_data' =>
+                                'search'
+                        ]
+                    ]
+                ])
+        ]
+    );
+}
+
+
+/* ============================================================
+   UTR PAYMENT
+   ============================================================ */
+
+function submitUtr(
+    int $uid,
+    string $paymentId,
+    string $utr
+): void {
+    $payments =
+        readJson('payments');
+
+    if (
+        !isset(
+            $payments[$paymentId]
+        )
+    ) {
+        sendMsg(
+            $uid,
+            "❌ Payment ID not found."
+        );
+
+        return;
+    }
+
+    if (
+        (int)(
+            $payments[$paymentId]['user_id']
+            ?? 0
+        ) !== $uid
+    ) {
+        sendMsg(
+            $uid,
+            "❌ Access denied."
+        );
+
+        return;
+    }
+
+    $utr =
+        trim($utr);
+
+    if (
+        $utr === '' ||
+        strlen($utr) > 120
+    ) {
+        sendMsg(
+            $uid,
+            "❌ Invalid UTR."
+        );
+
+        return;
+    }
+
+    $payments[$paymentId]['utr'] =
+        $utr;
+
+    $payments[$paymentId]['status'] =
+        'pending';
+
+    $payments[$paymentId]['utr_submitted_at'] =
+        now();
+
+    writeJson(
+        'payments',
+        $payments
+    );
+
+    sendMsg(
+        $uid,
+        "🧾 <b>UTR Submitted</b>\n\n" .
+        "Payment ID:\n" .
+        "<code>" .
+        esc($paymentId) .
+        "</code>\n\n" .
+        "Admin approval pending."
+    );
+
+    sendMsg(
+        ADMIN_ID,
+        "💳 <b>NEW PAYMENT</b>\n\n" .
+        "Payment: <code>" .
+        esc($paymentId) .
+        "</code>\n" .
+        "User: <code>" .
+        $uid .
+        "</code>\n" .
+        "Amount: ₹" .
+        MONTHLY_PRICE .
+        "\n" .
+        "UTR: <code>" .
+        esc($utr) .
+        "</code>",
+        [
+            'reply_markup' =>
+                kb([
                     [
                         [
                             'text' =>
@@ -2237,1630 +1482,3395 @@ if ($action === 'submit_utr') {
                                 $paymentId
                         ]
                     ]
-                ]
+                ])
+        ]
+    );
+}
+
+function handleUtrCommand(
+    int $uid,
+    string $args
+): void {
+    $parts =
+        preg_split(
+            '/\s+/',
+            trim($args),
+            2
+        );
+
+    $paymentId =
+        trim($parts[0] ?? '');
+
+    $utr =
+        trim($parts[1] ?? '');
+
+    if (
+        $paymentId === '' ||
+        $utr === ''
+    ) {
+        sendMsg(
+            $uid,
+            "Usage:\n" .
+            "<code>/utr PAYMENT_ID UTR</code>"
+        );
+
+        return;
+    }
+
+    submitUtr(
+        $uid,
+        $paymentId,
+        $utr
+    );
+}
+
+
+/* ============================================================
+   PAYMENT APPROVAL
+   ============================================================ */
+
+function processPaymentDecision(
+    int $adminId,
+    string $paymentId,
+    bool $approve
+): void {
+    if (!isAdmin($adminId)) {
+        return;
+    }
+
+    $payments =
+        readJson('payments');
+
+    if (
+        !isset(
+            $payments[$paymentId]
+        )
+    ) {
+        sendMsg(
+            $adminId,
+            "❌ Payment not found."
+        );
+
+        return;
+    }
+
+    $payment =
+        $payments[$paymentId];
+
+    if (
+        ($payment['status'] ?? '')
+        !== 'pending'
+    ) {
+        sendMsg(
+            $adminId,
+            "⚠️ Payment already processed."
+        );
+
+        return;
+    }
+
+    $uid =
+        (int)$payment['user_id'];
+
+    if ($approve) {
+        $base =
+            max(
+                now(),
+                premiumUntil($uid)
+            );
+
+        $until =
+            $base +
+            (ACCESS_DAYS * 86400);
+
+        $payment['status'] =
+            'approved';
+
+        $payment['approved_at'] =
+            now();
+
+        $payment['expires_at'] =
+            $until;
+
+        $payments[$paymentId] =
+            $payment;
+
+        writeJson(
+            'payments',
+            $payments
+        );
+
+        updateUser(
+            $uid,
+            [
+                'premium_until' =>
+                    $until
             ]
         );
 
-        header(
-            'Content-Type: text/html; charset=utf-8'
+        sendMsg(
+            $uid,
+            "✅ <b>Payment Approved</b>\n\n" .
+            "⭐ Premium activated.\n\n" .
+            "Valid until:\n" .
+            "<b>" .
+            fmtDate($until) .
+            "</b>"
         );
 
-        echo '<!doctype html>
-<html>
-<head>
-<meta name="viewport"
- content="width=device-width,initial-scale=1">
-<style>
-body{
- background:#090a0e;
- color:#fff;
- font-family:system-ui;
- display:grid;
- place-items:center;
- min-height:100vh;
-}
-.card{
- padding:30px;
- border-radius:24px;
- background:#171820;
- text-align:center;
- max-width:400px;
-}
-</style>
-</head>
-<body>
-<div class="card">
-<h1>✅ Submitted</h1>
-<p>Your payment is waiting for admin verification.</p>
-<p>You will receive a Telegram notification after approval.</p>
-</div>
-</body>
-</html>';
+        sendMsg(
+            $adminId,
+            "✅ Payment approved.\n" .
+            "User: <code>" .
+            $uid .
+            "</code>\n" .
+            "Until: <b>" .
+            fmtDate($until) .
+            "</b>"
+        );
+    } else {
+        $payment['status'] =
+            'declined';
 
-        exit;
+        $payments[$paymentId] =
+            $payment;
+
+        writeJson(
+            'payments',
+            $payments
+        );
+
+        sendMsg(
+            $uid,
+            "❌ <b>Payment Declined</b>\n\n" .
+            "Please contact support."
+        );
+
+        sendMsg(
+            $adminId,
+            "❌ Payment declined.\n" .
+            "Payment: <code>" .
+            esc($paymentId) .
+            "</code>"
+        );
+    }
+}
+
+
+/* ============================================================
+   ADMIN PANEL
+   ============================================================ */
+
+function adminPanel(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
     }
 
-    http_response_code(400);
-    exit('Unable to submit payment');
-}
+    $users =
+        readJson('users');
 
-if ($action === 'admin') {
+    $keys =
+        readJson('keys');
 
-    $id =
-        (int)($_GET['id'] ?? 0);
+    $payments =
+        readJson('payments');
 
-    header(
-        'Content-Type: text/html; charset=utf-8'
+    $active = 0;
+
+    foreach ($users as $user) {
+        if (
+            (int)(
+                $user['premium_until']
+                ?? 0
+            ) > now()
+        ) {
+            $active++;
+        }
+    }
+
+    $pending = 0;
+
+    foreach ($payments as $payment) {
+        if (
+            ($payment['status'] ?? '')
+            === 'pending'
+        ) {
+            $pending++;
+        }
+    }
+
+    $text =
+        "<b>🛠 MAYAMUSIC ADMIN</b>\n\n" .
+        "👥 Users: <b>" .
+        count($users) .
+        "</b>\n" .
+        "🟢 Active premium: <b>" .
+        $active .
+        "</b>\n" .
+        "🎟 Keys: <b>" .
+        count($keys) .
+        "</b>\n" .
+        "💳 Pending payments: <b>" .
+        $pending .
+        "</b>\n\n" .
+
+        "<b>Commands</b>\n" .
+        "<code>/genkey 30</code>\n" .
+        "<code>/give USER_ID 30</code>\n" .
+        "<code>/revoke USER_ID</code>\n" .
+        "<code>/broadcast message</code>\n" .
+        "<code>/stats</code>\n" .
+        "<code>/apitest</code>\n" .
+        "<code>/webhookinfo</code>";
+
+    $buttons = [
+        [
+            [
+                'text' =>
+                    '🎟 Generate Key',
+                'callback_data' =>
+                    'akey'
+            ]
+        ],
+        [
+            [
+                'text' =>
+                    '💳 Payments',
+                'callback_data' =>
+                    'apays'
+            ],
+            [
+                'text' =>
+                    '🎟 Keys',
+                'callback_data' =>
+                    'akeys'
+            ]
+        ],
+        [
+            [
+                'text' =>
+                    '👥 Users',
+                'callback_data' =>
+                    'ausers'
+            ],
+            [
+                'text' =>
+                    '📊 Stats',
+                'callback_data' =>
+                    'astats'
+            ]
+        ],
+        [
+            [
+                'text' =>
+                    '🏠 Home',
+                'callback_data' =>
+                    'home'
+            ]
+        ]
+    ];
+
+    sendMsg(
+        $uid,
+        $text,
+        [
+            'reply_markup' =>
+                kb($buttons)
+        ]
     );
-
-    echo adminPage($id);
-
-    exit;
 }
 
-if ($action === 'admin_generate_keys') {
 
-    $adminId =
-        (int)($_GET['id'] ?? 0);
+/* ============================================================
+   ADMIN COMMANDS
+   ============================================================ */
 
-    if (!isAdmin($adminId)) {
-        http_response_code(403);
-        exit('Forbidden');
+function handleAdminCommand(
+    int $uid,
+    string $text
+): bool {
+    if (!isAdmin($uid)) {
+        return false;
     }
 
-    $days =
-        max(
-            1,
-            (int)($_POST['days'] ?? 30)
+    $parts =
+        preg_split(
+            '/\s+/',
+            trim($text)
         );
+
+    $cmd =
+        strtolower(
+            $parts[0] ?? ''
+        );
+
+    if ($cmd === '/admin') {
+        adminPanel($uid);
+        return true;
+    }
+
+    if ($cmd === '/genkey') {
+        $days =
+            (int)(
+                $parts[1] ?? 30
+            );
+
+        if ($days < 1) {
+            $days = 30;
+        }
+
+        if ($days > 3650) {
+            $days = 3650;
+        }
+
+        $key =
+            createRedeemKey(
+                $days,
+                $uid
+            );
+
+        sendMsg(
+            $uid,
+            "🎟 <b>KEY GENERATED</b>\n\n" .
+            "<code>" .
+            esc($key) .
+            "</code>\n\n" .
+            "Duration: <b>" .
+            $days .
+            " days</b>"
+        );
+
+        return true;
+    }
+
+    if ($cmd === '/give') {
+        $target =
+            (int)(
+                $parts[1] ?? 0
+            );
+
+        $days =
+            (int)(
+                $parts[2] ?? 30
+            );
+
+        if (
+            $target < 1 ||
+            $days < 1
+        ) {
+            sendMsg(
+                $uid,
+                "Usage:\n" .
+                "<code>/give USER_ID DAYS</code>"
+            );
+
+            return true;
+        }
+
+        $base =
+            max(
+                now(),
+                premiumUntil($target)
+            );
+
+        $until =
+            $base +
+            ($days * 86400);
+
+        updateUser(
+            $target,
+            [
+                'premium_until' =>
+                    $until
+            ]
+        );
+
+        sendMsg(
+            $uid,
+            "✅ Premium granted.\n\n" .
+            "User: <code>" .
+            $target .
+            "</code>\n" .
+            "Days: <b>" .
+            $days .
+            "</b>"
+        );
+
+        sendMsg(
+            $target,
+            "⭐ <b>Premium Activated</b>\n\n" .
+            "Valid until:\n" .
+            "<b>" .
+            fmtDate($until) .
+            "</b>"
+        );
+
+        return true;
+    }
+
+    if ($cmd === '/revoke') {
+        $target =
+            (int)(
+                $parts[1] ?? 0
+            );
+
+        if ($target < 1) {
+            sendMsg(
+                $uid,
+                "Usage:\n" .
+                "<code>/revoke USER_ID</code>"
+            );
+
+            return true;
+        }
+
+        /*
+         * ADMIN CAN NEVER BE REVOKED
+         */
+        if (isAdmin($target)) {
+            sendMsg(
+                $uid,
+                "👑 Admin access cannot be revoked."
+            );
+
+            return true;
+        }
+
+        updateUser(
+            $target,
+            [
+                'premium_until' => 0
+            ]
+        );
+
+        sendMsg(
+            $uid,
+            "✅ Premium revoked for:\n" .
+            "<code>" .
+            $target .
+            "</code>"
+        );
+
+        sendMsg(
+            $target,
+            "⚠️ Your premium access has been revoked."
+        );
+
+        return true;
+    }
+
+    if ($cmd === '/broadcast') {
+        $message =
+            trim(
+                preg_replace(
+                    '/^\S+\s*/',
+                    '',
+                    $text
+                )
+            );
+
+        if ($message === '') {
+            sendMsg(
+                $uid,
+                "Usage:\n" .
+                "<code>/broadcast Your message</code>"
+            );
+
+            return true;
+        }
+
+        $users =
+            readJson('users');
+
+        $sent = 0;
+        $failed = 0;
+
+        foreach ($users as $id => $user) {
+            $result =
+                sendMsg(
+                    (int)$id,
+                    $message
+                );
+
+            if (
+                ($result['ok'] ?? false)
+            ) {
+                $sent++;
+            } else {
+                $failed++;
+            }
+
+            usleep(60000);
+        }
+
+        sendMsg(
+            $uid,
+            "📢 <b>Broadcast complete</b>\n\n" .
+            "Sent: <b>" .
+            $sent .
+            "</b>\n" .
+            "Failed: <b>" .
+            $failed .
+            "</b>"
+        );
+
+        return true;
+    }
+
+    if ($cmd === '/stats') {
+        adminStats($uid);
+        return true;
+    }
+
+    if ($cmd === '/apitest') {
+        apiTest($uid);
+        return true;
+    }
+
+    if ($cmd === '/webhookinfo') {
+        webhookInfo($uid);
+        return true;
+    }
+
+    if ($cmd === '/setwebhook') {
+        setWebhookCommand($uid);
+        return true;
+    }
+
+    if ($cmd === '/delwebhook') {
+        deleteWebhookCommand($uid);
+        return true;
+    }
+
+    return false;
+}
+
+
+/* ============================================================
+   ADMIN STATS
+   ============================================================ */
+
+function adminStats(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
+    }
+
+    $users =
+        readJson('users');
+
+    $payments =
+        readJson('payments');
+
+    $keys =
+        readJson('keys');
+
+    $approved = 0;
+    $revenue = 0;
+    $pending = 0;
+
+    foreach ($payments as $payment) {
+        $status =
+            $payment['status'] ?? '';
+
+        if ($status === 'approved') {
+            $approved++;
+
+            $revenue +=
+                (int)(
+                    $payment['amount']
+                    ?? 0
+                );
+        }
+
+        if ($status === 'pending') {
+            $pending++;
+        }
+    }
+
+    sendMsg(
+        $uid,
+        "<b>📊 MAYAMUSIC STATISTICS</b>\n\n" .
+        "👥 Users: <b>" .
+        count($users) .
+        "</b>\n" .
+        "🎟 Keys: <b>" .
+        count($keys) .
+        "</b>\n" .
+        "💳 Approved: <b>" .
+        $approved .
+        "</b>\n" .
+        "⏳ Pending: <b>" .
+        $pending .
+        "</b>\n" .
+        "💰 Recorded revenue: <b>₹" .
+        $revenue .
+        "</b>"
+    );
+}
+
+
+/* ============================================================
+   ADMIN USERS
+   ============================================================ */
+
+function adminUsers(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
+    }
+
+    $users =
+        readJson('users');
+
+    $text =
+        "<b>👥 USERS</b>\n\n";
+
+    $count = 0;
+
+    foreach (
+        array_reverse(
+            $users,
+            true
+        ) as $id => $user
+    ) {
+        $until =
+            (int)(
+                $user['premium_until']
+                ?? 0
+            );
+
+        $status =
+            $until > now()
+                ? '🟢'
+                : '🔴';
+
+        $text .=
+            "<code>" .
+            (int)$id .
+            "</code> " .
+            $status .
+            " " .
+            esc(
+                (string)(
+                    $user['first_name']
+                    ?? ''
+                )
+            ) .
+            "\n";
+
+        $count++;
+
+        if ($count >= 30) {
+            break;
+        }
+    }
+
+    sendMsg(
+        $uid,
+        $text,
+        [
+            'reply_markup' =>
+                kb([
+                    [
+                        [
+                            'text' =>
+                                '⬅️ Admin',
+                            'callback_data' =>
+                                'admin'
+                        ]
+                    ]
+                ])
+        ]
+    );
+}
+
+
+/* ============================================================
+   ADMIN KEYS
+   ============================================================ */
+
+function adminKeys(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
+    }
+
+    $keys =
+        readJson('keys');
+
+    $text =
+        "<b>🎟 REDEEM KEYS</b>\n\n";
+
+    if (!$keys) {
+        $text .=
+            "No keys generated.";
+    } else {
+        $items =
+            array_reverse(
+                $keys,
+                true
+            );
+
+        $count = 0;
+
+        foreach ($items as $key => $item) {
+            $text .=
+                "<code>" .
+                esc($key) .
+                "</code>\n" .
+                "Status: <b>" .
+                esc(
+                    (string)(
+                        $item['status']
+                        ?? ''
+                    )
+                ) .
+                "</b>\n" .
+                "Expires: " .
+                fmtDate(
+                    (int)(
+                        $item['expires_at']
+                        ?? 0
+                    )
+                ) .
+                "\n\n";
+
+            $count++;
+
+            if ($count >= 10) {
+                break;
+            }
+        }
+    }
+
+    sendMsg(
+        $uid,
+        $text,
+        [
+            'reply_markup' =>
+                kb([
+                    [
+                        [
+                            'text' =>
+                                '🎟 Generate 30D',
+                            'callback_data' =>
+                                'akey'
+                        ]
+                    ],
+                    [
+                        [
+                            'text' =>
+                                '⬅️ Admin',
+                            'callback_data' =>
+                                'admin'
+                        ]
+                    ]
+                ])
+        ]
+    );
+}
+
+
+/* ============================================================
+   ADMIN PAYMENTS
+   ============================================================ */
+
+function adminPayments(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
+    }
+
+    $payments =
+        readJson('payments');
+
+    $text =
+        "<b>💳 PENDING PAYMENTS</b>\n\n";
+
+    $buttons = [];
+    $count = 0;
+
+    foreach (
+        array_reverse(
+            $payments,
+            true
+        ) as $id => $payment
+    ) {
+        if (
+            ($payment['status'] ?? '')
+            !== 'pending'
+        ) {
+            continue;
+        }
+
+        $text .=
+            "<code>" .
+            esc($id) .
+            "</code>\n" .
+            "User: <code>" .
+            (int)$payment['user_id'] .
+            "</code>\n" .
+            "Amount: ₹" .
+            (int)$payment['amount'] .
+            "\n" .
+            "UTR: <code>" .
+            esc(
+                (string)(
+                    $payment['utr']
+                    ?? ''
+                )
+            ) .
+            "</code>\n\n";
+
+        $buttons[] = [
+            [
+                'text' =>
+                    '✅ Approve',
+                'callback_data' =>
+                    'approve:' . $id
+            ],
+            [
+                'text' =>
+                    '❌ Decline',
+                'callback_data' =>
+                    'decline:' . $id
+            ]
+        ];
+
+        $count++;
+
+        if ($count >= 10) {
+            break;
+        }
+    }
+
+    if ($count === 0) {
+        $text .=
+            "No pending payments.";
+    }
+
+    $buttons[] = [
+        [
+            'text' =>
+                '⬅️ Admin',
+            'callback_data' =>
+                'admin'
+        ]
+    ];
+
+    sendMsg(
+        $uid,
+        $text,
+        [
+            'reply_markup' =>
+                kb($buttons)
+        ]
+    );
+}
+
+
+/* ============================================================
+   API TEST
+   ============================================================ */
+
+function apiTest(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
+    }
+
+    $testQuery =
+        'Chandni';
+
+    $url =
+        MUSIC_API .
+        rawurlencode($testQuery);
+
+    $response =
+        httpGetJson(
+            $url,
+            20
+        );
+
+    if (
+        !($response['ok'] ?? false)
+    ) {
+        sendMsg(
+            $uid,
+            "❌ <b>MUSIC API TEST FAILED</b>\n\n" .
+            "HTTP: <code>" .
+            (int)(
+                $response['http_code']
+                ?? 0
+            ) .
+            "</code>\n" .
+            "Error: <code>" .
+            esc(
+                (string)(
+                    $response['error']
+                    ?? 'Unknown error'
+                )
+            ) .
+            "</code>"
+        );
+
+        return;
+    }
+
+    $data =
+        $response['data']
+        ?? [];
 
     $count =
-        max(
-            1,
-            min(
-                100,
-                (int)($_POST['count'] ?? 1)
+        is_array(
+            $data['results'] ?? null
+        )
+            ? count($data['results'])
+            : 0;
+
+    $first =
+        $data['results'][0]
+        ?? null;
+
+    if (is_array($first)) {
+        sendMsg(
+            $uid,
+            "✅ <b>MUSIC API WORKING</b>\n\n" .
+            "HTTP: <b>" .
+            (int)$response['http_code'] .
+            "</b>\n" .
+            "Results: <b>" .
+            $count .
+            "</b>\n\n" .
+            "Title: <b>" .
+            esc(
+                (string)(
+                    $first['title']
+                    ?? ''
+                )
+            ) .
+            "</b>\n" .
+            "Artist: <b>" .
+            esc(
+                (string)(
+                    $first['artists']
+                    ?? ''
+                )
+            ) .
+            "</b>\n" .
+            "Album: <b>" .
+            esc(
+                (string)(
+                    $first['album']
+                    ?? ''
+                )
+            ) .
+            "</b>\n" .
+            "Duration: <b>" .
+            esc(
+                (string)(
+                    $first['duration']
+                    ?? ''
+                )
+            ) .
+            "</b>\n" .
+            "Download URL: <b>" .
+            (
+                !empty(
+                    $first['download_url']
+                )
+                ? 'YES'
+                : 'NO'
+            ) .
+            "</b>"
+        );
+    } else {
+        sendMsg(
+            $uid,
+            "⚠️ API responded but no valid results were found.\n\n" .
+            "HTTP: <b>" .
+            (int)$response['http_code'] .
+            "</b>"
+        );
+    }
+}
+
+
+/* ============================================================
+   WEBHOOK
+   ============================================================ */
+
+function webhookInfo(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
+    }
+
+    $result =
+        tg('getWebhookInfo');
+
+    if (
+        !($result['ok'] ?? false)
+    ) {
+        sendMsg(
+            $uid,
+            "❌ Webhook check failed.\n\n" .
+            esc(
+                (string)(
+                    $result['description']
+                    ?? ''
+                )
             )
         );
 
-    $output = [];
-
-    for ($i = 0; $i < $count; $i++) {
-        $output[] =
-            generateRedeemKey($days)['key'];
+        return;
     }
 
-    header(
-        'Content-Type: text/plain; charset=utf-8'
-    );
+    $data =
+        $result['result']
+        ?? [];
 
-    echo implode(
-        PHP_EOL,
-        $output
-    );
+    $url =
+        (string)(
+            $data['url'] ?? ''
+        );
 
-    exit;
+    $lastError =
+        (string)(
+            $data['last_error_message']
+            ?? 'None'
+        );
+
+    $pending =
+        (int)(
+            $data['pending_update_count']
+            ?? 0
+        );
+
+    sendMsg(
+        $uid,
+        "<b>🔗 WEBHOOK INFO</b>\n\n" .
+        "URL:\n<code>" .
+        esc(
+            $url !== ''
+                ? $url
+                : 'NOT SET'
+        ) .
+        "</code>\n\n" .
+        "Pending updates: <b>" .
+        $pending .
+        "</b>\n" .
+        "Last error:\n<code>" .
+        esc($lastError) .
+        "</code>"
+    );
 }
 
-if ($action === 'admin_webhook') {
-
-    $adminId =
-        (int)($_GET['id'] ?? 0);
-
-    if (!isAdmin($adminId)) {
-        http_response_code(403);
-        exit('Forbidden');
+function setWebhookCommand(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
     }
 
-    $mode =
-        $_POST['mode'] ?? 'set';
+    $url =
+        configWebAppUrl();
 
-    if ($mode === 'delete') {
+    if (
+        $url === '' ||
+        !str_starts_with(
+            $url,
+            'https://'
+        )
+    ) {
+        sendMsg(
+            $uid,
+            "❌ WEBAPP_URL must be a public HTTPS URL."
+        );
 
-        $result =
-            telegram('deleteWebhook');
+        return;
+    }
 
-    } else {
-
-        $result =
-            telegram('setWebhook', [
-                'url' => WEBAPP_URL,
+    $result =
+        tg(
+            'setWebhook',
+            [
+                'url' => $url,
                 'allowed_updates' =>
                     json_encode([
                         'message',
                         'callback_query',
                         'pre_checkout_query'
                     ])
-            ]);
-    }
-
-    header(
-        'Content-Type: application/json'
-    );
-
-    echo json_encode(
-        $result,
-        JSON_PRETTY_PRINT |
-        JSON_UNESCAPED_SLASHES
-    );
-
-    exit;
-}
-
-/* =========================================================
-   WEBHOOK
-   ========================================================= */
-
-$rawUpdate =
-    @file_get_contents('php://input');
-
-if (
-    $_SERVER['REQUEST_METHOD'] === 'POST' &&
-    $rawUpdate !== false &&
-    trim($rawUpdate) !== ''
-) {
-
-    $update =
-        json_decode($rawUpdate, true);
-
-    if (!is_array($update)) {
-        http_response_code(400);
-        exit('Invalid update');
-    }
-
-    /*
-     * CALLBACK QUERY
-     */
-    if (isset($update['callback_query'])) {
-
-        $callback =
-            $update['callback_query'];
-
-        $callbackId =
-            (string)(
-                $callback['id'] ?? ''
-            );
-
-        $data =
-            (string)(
-                $callback['data'] ?? ''
-            );
-
-        $from =
-            $callback['from'] ?? [];
-
-        $userId =
-            (int)($from['id'] ?? 0);
-
-        $message =
-            $callback['message'] ?? [];
-
-        $chatId =
-            (int)(
-                $message['chat']['id'] ??
-                $userId
-            );
-
-        updateTelegramUser($from);
-
-        /*
-         * Search button
-         */
-        if ($data === 'search') {
-
-            answerCallback(
-                $callbackId,
-                'Use /search SONG'
-            );
-
-            sendMessage(
-                $chatId,
-                "🔎 <b>Search Music</b>\n\n" .
-                "Send:\n" .
-                "<code>/search song name</code>"
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * Premium
-         */
-        if ($data === 'premium') {
-
-            answerCallback(
-                $callbackId
-            );
-
-            $user =
-                getUser($userId);
-
-            if (premiumActive($user)) {
-
-                sendMessage(
-                    $chatId,
-                    "💎 <b>Premium Active</b>\n\n" .
-                    "Valid until:\n<b>" .
-                    h(premiumUntilText($user)) .
-                    "</b>"
-                );
-
-            } else {
-
-                sendMessage(
-                    $chatId,
-                    "💎 <b>MAYAMUSIC Premium</b>\n\n" .
-                    "₹49 / 30 days\n\n" .
-                    "Private music access + Mini App player + " .
-                    "lyrics + artwork + auto-next.",
-                    premiumKeyboard()
-                );
-            }
-
-            exit('OK');
-        }
-
-        /*
-         * Account
-         */
-        if ($data === 'account') {
-
-            answerCallback(
-                $callbackId
-            );
-
-            $user =
-                getUser($userId);
-
-            $status =
-                premiumActive($user)
-                    ? '🟢 ACTIVE'
-                    : '🔴 INACTIVE';
-
-            sendMessage(
-                $chatId,
-                "👤 <b>Your Account</b>\n\n" .
-                "ID: <code>" .
-                $userId .
-                "</code>\n" .
-                "Status: <b>" .
-                $status .
-                "</b>\n" .
-                "Valid until: <b>" .
-                h(premiumUntilText($user)) .
-                "</b>"
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * Redeem
-         */
-        if ($data === 'redeem') {
-
-            answerCallback(
-                $callbackId
-            );
-
-            sendMessage(
-                $chatId,
-                "🔑 <b>Redeem Premium</b>\n\n" .
-                "Send:\n" .
-                "<code>/redeem MAYA-XXXXX-XXXXX</code>"
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * Support
-         */
-        if ($data === 'support') {
-
-            answerCallback(
-                $callbackId
-            );
-
-            sendMessage(
-                $chatId,
-                "🆘 Support: " .
-                h(SUPPORT_USERNAME)
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * Submit UTR
-         */
-        if ($data === 'submitutr') {
-
-            answerCallback(
-                $callbackId
-            );
-
-            $payment =
-                createPayment($userId);
-
-            $upiLink =
-                'upi://pay?' .
-                http_build_query([
-                    'pa' => UPI_ID,
-                    'pn' => UPI_NAME,
-                    'am' => '49.00',
-                    'cu' => 'INR',
-                    'tn' =>
-                        BOT_NAME . ' ' .
-                        $payment['id']
-                ]);
-
-            sendMessage(
-                $chatId,
-                "💳 <b>Payment</b>\n\n" .
-                "Amount: ₹49\n" .
-                "UPI: <code>" .
-                h(UPI_ID) .
-                "</code>\n" .
-                "Payment ID: <code>" .
-                h($payment['id']) .
-                "</code>\n\n" .
-                "1. Pay ₹49\n" .
-                "2. Open the payment page if needed\n" .
-                "3. Submit your UTR/Transaction ID\n\n" .
-                "Payment verification is manual.",
-                [
-                    'inline_keyboard' => [
-                        [
-                            [
-                                'text' =>
-                                    '💳 Open UPI',
-                                'url' =>
-                                    $upiLink
-                            ]
-                        ],
-                        [
-                            [
-                                'text' =>
-                                    '🧾 Open Payment Page',
-                                'web_app' => [
-                                    'url' =>
-                                        WEBAPP_URL .
-                                        '?action=premium&user_id=' .
-                                        $userId
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * Search result song
-         */
-        if (str_starts_with($data, 'song:')) {
-
-            answerCallback(
-                $callbackId,
-                'Preparing player...'
-            );
-
-            $index =
-                (int)substr(
-                    $data,
-                    strlen('song:')
-                );
-
-            $queues =
-                loadJson(QUEUES_FILE);
-
-            $queue =
-                $queues[(string)$userId] ??
-                null;
-
-            if (
-                !$queue ||
-                empty($queue['songs'][$index])
-            ) {
-                sendMessage(
-                    $chatId,
-                    "❌ Search session expired. " .
-                    "Search again."
-                );
-
-                exit('OK');
-            }
-
-            $token =
-                createPlayer(
-                    $userId,
-                    $queue['songs'],
-                    $index
-                );
-
-            $song =
-                $queue['songs'][$index];
-
-            sendMessage(
-                $chatId,
-                "🎵 <b>" .
-                h($song['title']) .
-                "</b>\n" .
-                "👤 " .
-                h($song['artists']) .
-                "\n\n" .
-                "Open the MAYAMUSIC player:",
-                [
-                    'inline_keyboard' => [
-                        [
-                            [
-                                'text' =>
-                                    '▶️ Open Player',
-                                'web_app' => [
-                                    'url' =>
-                                        playerUrl($token)
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * Payment approve
-         */
-        if (
-            str_starts_with(
-                $data,
-                'approve:'
-            )
-        ) {
-
-            if (!isAdmin($userId)) {
-
-                answerCallback(
-                    $callbackId,
-                    'Admin only',
-                    true
-                );
-
-                exit('OK');
-            }
-
-            $paymentId =
-                substr(
-                    $data,
-                    strlen('approve:')
-                );
-
-            if (approvePayment($paymentId)) {
-
-                answerCallback(
-                    $callbackId,
-                    'Payment approved'
-                );
-
-                editMessage(
-                    $chatId,
-                    (int)$message['message_id'],
-                    "✅ <b>Payment Approved</b>\n\n" .
-                    "Payment ID: <code>" .
-                    h($paymentId) .
-                    "</code>"
-                );
-
-            } else {
-
-                answerCallback(
-                    $callbackId,
-                    'Could not approve',
-                    true
-                );
-            }
-
-            exit('OK');
-        }
-
-        /*
-         * Payment decline
-         */
-        if (
-            str_starts_with(
-                $data,
-                'decline:'
-            )
-        ) {
-
-            if (!isAdmin($userId)) {
-
-                answerCallback(
-                    $callbackId,
-                    'Admin only',
-                    true
-                );
-
-                exit('OK');
-            }
-
-            $paymentId =
-                substr(
-                    $data,
-                    strlen('decline:')
-                );
-
-            if (declinePayment($paymentId)) {
-
-                answerCallback(
-                    $callbackId,
-                    'Payment declined'
-                );
-
-                editMessage(
-                    $chatId,
-                    (int)$message['message_id'],
-                    "❌ <b>Payment Declined</b>\n\n" .
-                    "Payment ID: <code>" .
-                    h($paymentId) .
-                    "</code>"
-                );
-
-            } else {
-
-                answerCallback(
-                    $callbackId,
-                    'Could not decline',
-                    true
-                );
-            }
-
-            exit('OK');
-        }
-
-        exit('OK');
-    }
-
-    /*
-     * NORMAL MESSAGE
-     */
-
-    $message =
-        $update['message'] ?? null;
-
-    if (!$message) {
-        exit('OK');
-    }
-
-    $chat =
-        $message['chat'] ?? [];
-
-    $from =
-        $message['from'] ?? [];
-
-    $chatId =
-        (int)($chat['id'] ?? 0);
-
-    $userId =
-        (int)($from['id'] ?? 0);
-
-    $text =
-        trim((string)(
-            $message['text'] ?? ''
-        ));
-
-    if ($userId > 0) {
-        updateTelegramUser($from);
-    }
-
-    /*
-     * CHANNEL/GROUP MODE
-     *
-     * Channel/group music access is FREE.
-     */
-
-    $groupMode =
-        isGroupChat($chat);
-
-    /*
-     * /start
-     */
-
-    if (
-        preg_match(
-            '/^\/start(?:@\w+)?(?:\s+(.*))?$/iu',
-            $text,
-            $m
-        )
-    ) {
-
-        $user =
-            getUser($userId);
-
-        $status =
-            premiumActive($user)
-                ? "💎 Premium active until " .
-                  premiumUntilText($user)
-                : "🔒 Private premium inactive";
-
-        sendMessage(
-            $chatId,
-            "🎵 <b>Welcome to MAYAMUSIC</b>\n\n" .
-            "Real music search + streaming player.\n\n" .
-            "━━━━━━━━━━━━━━\n" .
-            "🎧 Search music\n" .
-            "🖼 Album artwork\n" .
-            "🎤 Lyrics\n" .
-            "⏭ Auto-next\n" .
-            "📋 Queue\n" .
-            "💎 Premium\n" .
-            "🔑 Redeem\n" .
-            "━━━━━━━━━━━━━━\n\n" .
-            h($status) .
-            "\n\n" .
-            "Use <code>/search song name</code> to begin.",
-            mainKeyboard(
-                premiumActive($user)
-            )
-        );
-
-        exit('OK');
-    }
-
-    /*
-     * /help
-     */
-
-    if (
-        preg_match(
-            '/^\/help(?:@\w+)?$/iu',
-            $text
-        )
-    ) {
-
-        sendMessage(
-            $chatId,
-            helpText(
-                isAdmin($userId)
-            )
-        );
-
-        exit('OK');
-    }
-
-    /*
-     * /account
-     */
-
-    if (
-        preg_match(
-            '/^\/account(?:@\w+)?$/iu',
-            $text
-        )
-    ) {
-
-        $user =
-            getUser($userId);
-
-        $status =
-            premiumActive($user)
-                ? '🟢 ACTIVE'
-                : '🔴 INACTIVE';
-
-        sendMessage(
-            $chatId,
-            "👤 <b>Account</b>\n\n" .
-            "User ID: <code>" .
-            $userId .
-            "</code>\n" .
-            "Premium: <b>" .
-            $status .
-            "</b>\n" .
-            "Valid until: <b>" .
-            h(premiumUntilText($user)) .
-            "</b>"
-        );
-
-        exit('OK');
-    }
-
-    /*
-     * /premium
-     */
-
-    if (
-        preg_match(
-            '/^\/premium(?:@\w+)?$/iu',
-            $text
-        )
-    ) {
-
-        $user =
-            getUser($userId);
-
-        if (premiumActive($user)) {
-
-            sendMessage(
-                $chatId,
-                "💎 <b>Premium Active</b>\n\n" .
-                "Valid until: <b>" .
-                h(premiumUntilText($user)) .
-                "</b>"
-            );
-
-        } else {
-
-            $payment =
-                createPayment($userId);
-
-            $upiLink =
-                'upi://pay?' .
-                http_build_query([
-                    'pa' => UPI_ID,
-                    'pn' => UPI_NAME,
-                    'am' => '49.00',
-                    'cu' => 'INR',
-                    'tn' =>
-                        BOT_NAME . ' ' .
-                        $payment['id']
-                ]);
-
-            sendMessage(
-                $chatId,
-                "💎 <b>MAYAMUSIC Premium</b>\n\n" .
-                "₹49 / 30 days\n\n" .
-                "✓ Music streaming\n" .
-                "✓ Mini App player\n" .
-                "✓ Artwork\n" .
-                "✓ Lyrics\n" .
-                "✓ Auto-next\n" .
-                "✓ Queue\n\n" .
-                "UPI: <code>" .
-                h(UPI_ID) .
-                "</code>\n\n" .
-                "After payment submit your UTR.",
-                [
-                    'inline_keyboard' => [
-                        [
-                            [
-                                'text' =>
-                                    '💳 Pay ₹49',
-                                'url' =>
-                                    $upiLink
-                            ]
-                        ],
-                        [
-                            [
-                                'text' =>
-                                    '🧾 Payment Page',
-                                'web_app' => [
-                                    'url' =>
-                                        WEBAPP_URL .
-                                        '?action=premium&user_id=' .
-                                        $userId
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            );
-        }
-
-        exit('OK');
-    }
-
-    /*
-     * /search
-     */
-
-    if (
-        preg_match(
-            '/^\/search(?:@\w+)?\s+(.+)$/iu',
-            $text,
-            $m
-        )
-    ) {
-
-        sendSearchResults(
-            $chatId,
-            trim($m[1]),
-            !$groupMode
-        );
-
-        exit('OK');
-    }
-
-    /*
-     * /play
-     */
-
-    if (
-        preg_match(
-            '/^\/play(?:@\w+)?\s+(.+)$/iu',
-            $text,
-            $m
-        )
-    ) {
-
-        sendSearchResults(
-            $chatId,
-            trim($m[1]),
-            !$groupMode
-        );
-
-        exit('OK');
-    }
-
-    /*
-     * /redeem
-     */
-
-    if (
-        preg_match(
-            '/^\/redeem(?:@\w+)?\s+(.+)$/iu',
-            $text,
-            $m
-        )
-    ) {
-
-        $result =
-            redeemKey(
-                $userId,
-                trim($m[1])
-            );
-
-        sendMessage(
-            $chatId,
-            $result['message']
-        );
-
-        exit('OK');
-    }
-
-    /*
-     * /support
-     */
-
-    if (
-        preg_match(
-            '/^\/support(?:@\w+)?$/iu',
-            $text
-        )
-    ) {
-
-        sendMessage(
-            $chatId,
-            "🆘 <b>MAYAMUSIC Support</b>\n\n" .
-            "Contact: " .
-            h(SUPPORT_USERNAME),
-            [
-                'inline_keyboard' => [
-                    [
-                        [
-                            'text' =>
-                                '💬 Open Support',
-                            'url' =>
-                                'https://t.me/' .
-                                ltrim(
-                                    SUPPORT_USERNAME,
-                                    '@'
-                                )
-                        ]
-                    ]
-                ]
             ]
         );
 
-        exit('OK');
+    if (
+        $result['ok'] ?? false
+    ) {
+        sendMsg(
+            $uid,
+            "✅ <b>Webhook set successfully.</b>\n\n" .
+            "<code>" .
+            esc($url) .
+            "</code>"
+        );
+    } else {
+        sendMsg(
+            $uid,
+            "❌ Webhook failed:\n\n" .
+            "<code>" .
+            esc(
+                (string)(
+                    $result['description']
+                    ?? 'Unknown'
+                )
+            ) .
+            "</code>"
+        );
+    }
+}
+
+function deleteWebhookCommand(int $uid): void
+{
+    if (!isAdmin($uid)) {
+        return;
     }
 
-    /*
-     * VOICE CHAT COMMANDS
-     *
-     * PHP Bot API cannot itself join Telegram
-     * Voice Chat as an audio participant.
-     */
+    $result =
+        tg('deleteWebhook');
 
     if (
-        preg_match(
-            '/^\/playcc(?:@\w+)?(?:\s+(.+))?$/iu',
-            $text,
-            $m
+        $result['ok'] ?? false
+    ) {
+        sendMsg(
+            $uid,
+            "✅ Webhook deleted."
+        );
+    } else {
+        sendMsg(
+            $uid,
+            "❌ Failed to delete webhook."
+        );
+    }
+}
+
+
+/* ============================================================
+   MESSAGE PARSER
+   ============================================================ */
+
+function parseCommand(
+    string $text
+): array {
+    $parts =
+        preg_split(
+            '/\s+/',
+            trim($text),
+            2
+        );
+
+    return [
+        strtolower(
+            $parts[0] ?? ''
+        ),
+        trim(
+            $parts[1] ?? ''
+        )
+    ];
+}
+
+
+/* ============================================================
+   HELP
+   ============================================================ */
+
+function sendHelp(
+    int $uid
+): void {
+    sendMsg(
+        $uid,
+        "<b>🎵 MAYAMUSIC COMMANDS</b>\n\n" .
+
+        "<b>Music</b>\n" .
+        "<code>/search song name</code>\n" .
+        "<code>/play song name</code>\n\n" .
+
+        "<b>Account</b>\n" .
+        "<code>/account</code>\n" .
+        "<code>/premium</code>\n" .
+        "<code>/redeem KEY</code>\n\n" .
+
+        "<b>Payment</b>\n" .
+        "<code>/utr PAYMENT_ID UTR</code>\n\n" .
+
+        "<b>Group / Channel</b>\n" .
+        "<code>/playcc song</code>\n" .
+        "<code>/pausecc</code>\n" .
+        "<code>/resumecc</code>\n" .
+        "<code>/skipcc</code>\n" .
+        "<code>/stopcc</code>\n" .
+        "<code>/leavecc</code>"
+    );
+}
+
+
+/* ============================================================
+   GROUP / CHANNEL VC COMMANDS
+   ============================================================ */
+
+function channelCommand(
+    array $chat,
+    string $command,
+    string $arg
+): void {
+    $chatId =
+        (int)$chat['id'];
+
+    $channels =
+        readJson('channels');
+
+    $key =
+        (string)$chatId;
+
+    if (
+        !isset(
+            $channels[$key]
         )
     ) {
+        $channels[$key] = [
+            'chat_id' => $chatId,
+            'title' =>
+                (string)(
+                    $chat['title']
+                    ?? ''
+                ),
+            'created_at' => now(),
+            'status' => 'idle',
+            'current' => null,
+            'queue' => []
+        ];
+    }
 
-        $query =
-            trim((string)(
-                $m[1] ?? ''
-            ));
-
-        if ($query === '') {
-
-            sendMessage(
+    if ($command === '/playcc') {
+        if (trim($arg) === '') {
+            sendMsg(
                 $chatId,
-                "🎧 Usage:\n" .
-                "<code>/playcc song name</code>\n\n" .
-                "Note: actual Voice Chat audio requires " .
-                "a separate VC engine."
+                "Usage:\n" .
+                "<code>/playcc song name</code>"
             );
 
-            exit('OK');
+            return;
         }
 
         $results =
-            searchMusic($query);
+            searchMusic($arg);
 
         if (!$results) {
-
-            sendMessage(
+            sendMsg(
                 $chatId,
-                "❌ No result found."
+                "❌ No song found."
             );
 
-            exit('OK');
+            return;
         }
 
         /*
-         * API currently has no rating field.
-         * Therefore first API result is used.
+         * The supplied API has no rating field.
+         * Therefore first API result is selected.
          */
-        $song = $results[0];
 
-        sendMessage(
-            $chatId,
-            "🎧 <b>VC Request</b>\n\n" .
-            "Selected result:\n" .
-            "🎵 " .
-            h($song['title']) .
-            "\n👤 " .
-            h($song['artists']) .
-            "\n\n" .
-            "⚠️ PHP Bot API cannot directly join/play " .
-            "audio in Telegram Voice Chat. " .
-            "Connect a compatible VC audio engine to " .
-            "enable actual playback."
+        $song =
+            $results[0];
+
+        $channels[$key]['current'] =
+            $song;
+
+        $channels[$key]['queue'] =
+            $results;
+
+        $channels[$key]['status'] =
+            'play_requested';
+
+        writeJson(
+            'channels',
+            $channels
         );
 
-        exit('OK');
+        sendMsg(
+            $chatId,
+            "▶️ <b>VC PLAY REQUEST</b>\n\n" .
+            "<b>" .
+            esc($song['title']) .
+            "</b>\n" .
+            esc($song['artists']) .
+            "\n\n" .
+            "Song selected successfully.\n\n" .
+            "⚠️ Actual Telegram Voice Chat audio requires a separate MTProto/voice engine. PHP Bot API itself cannot join and stream audio into a VC."
+        );
+
+        return;
+    }
+
+    $status =
+        match ($command) {
+            '/pausecc' =>
+                'paused',
+
+            '/resumecc' =>
+                'playing',
+
+            '/skipcc' =>
+                'skip',
+
+            '/stopcc' =>
+                'stopped',
+
+            '/leavecc' =>
+                'leave',
+
+            default =>
+                'idle'
+        };
+
+    $channels[$key]['status'] =
+        $status;
+
+    writeJson(
+        'channels',
+        $channels
+    );
+
+    sendMsg(
+        $chatId,
+        "🎛 <b>" .
+        strtoupper(
+            ltrim(
+                $command,
+                '/'
+            )
+        ) .
+        "</b>\n\n" .
+        "Control event recorded."
+    );
+}
+
+
+/* ============================================================
+   MESSAGE HANDLER
+   ============================================================ */
+
+function handleMessage(
+    array $message
+): void {
+    $chat =
+        $message['chat']
+        ?? [];
+
+    $from =
+        $message['from']
+        ?? [];
+
+    $uid =
+        (int)(
+            $from['id']
+            ?? 0
+        );
+
+    if ($uid <= 0) {
+        return;
+    }
+
+    $chatId =
+        $chat['id']
+        ?? $uid;
+
+    $chatType =
+        (string)(
+            $chat['type']
+            ?? 'private'
+        );
+
+    $text =
+        trim(
+            (string)(
+                $message['text']
+                ?? ''
+            )
+        );
+
+    userRecord($uid);
+
+    updateUser(
+        $uid,
+        [
+            'username' =>
+                (string)(
+                    $from['username']
+                    ?? ''
+                ),
+            'first_name' =>
+                (string)(
+                    $from['first_name']
+                    ?? ''
+                )
+        ]
+    );
+
+    if (
+        handleAdminCommand(
+            $uid,
+            $text
+        )
+    ) {
+        return;
+    }
+
+    [
+        $command,
+        $args
+    ] =
+        parseCommand($text);
+
+    if ($command === '/start') {
+        if ($chatType !== 'private') {
+            sendMsg(
+                $chatId,
+                "🎵 <b>" .
+                BOT_NAME .
+                "</b>\n\n" .
+                "This group/channel has FREE access."
+            );
+
+            return;
+        }
+
+        sendMsg(
+            $uid,
+            "<b>🎵 WELCOME TO MAYAMUSIC</b>\n\n" .
+            "Search music, open Mini Player, lyrics, queue, premium and redeem keys.",
+            [
+                'reply_markup' =>
+                    mainKeyboard($uid)
+            ]
+        );
+
+        return;
+    }
+
+    if ($command === '/help') {
+        sendHelp($uid);
+        return;
+    }
+
+    if (
+        $command === '/search' ||
+        $command === '/play'
+    ) {
+        showSearch(
+            $uid,
+            $args
+        );
+
+        return;
+    }
+
+    if ($command === '/premium') {
+        if ($chatType !== 'private') {
+            sendMsg(
+                $chatId,
+                "🎵 This group/channel is FREE.\n" .
+                "Premium is for private users."
+            );
+        } else {
+            sendPremium($uid);
+        }
+
+        return;
+    }
+
+    if ($command === '/account') {
+        sendMsg(
+            $uid,
+            accountText($uid),
+            [
+                'reply_markup' =>
+                    kb([
+                        [
+                            [
+                                'text' =>
+                                    '⭐ Premium',
+                                'callback_data' =>
+                                    'premium'
+                            ],
+                            [
+                                'text' =>
+                                    '🏠 Home',
+                                'callback_data' =>
+                                    'home'
+                            ]
+                        ]
+                    ])
+            ]
+        );
+
+        return;
+    }
+
+    if ($command === '/redeem') {
+        redeemKey(
+            $uid,
+            $args
+        );
+
+        return;
+    }
+
+    if ($command === '/utr') {
+        handleUtrCommand(
+            $uid,
+            $args
+        );
+
+        return;
     }
 
     if (
         in_array(
-            strtolower(
-                preg_replace(
-                    '/^\/(\w+).*$/',
-                    '$1',
-                    $text
-                )
-            ),
+            $command,
             [
-                'pausecc',
-                'resumecc',
-                'skipcc',
-                'stopcc',
-                'leavecc'
+                '/playcc',
+                '/pausecc',
+                '/resumecc',
+                '/skipcc',
+                '/stopcc',
+                '/leavecc'
             ],
             true
         )
     ) {
+        if ($chatType === 'private') {
+            sendMsg(
+                $uid,
+                "Use this command in a group/channel."
+            );
 
-        sendMessage(
-            $chatId,
-            "🎧 VC command received.\n\n" .
-            "Actual VC playback requires a separate " .
-            "Telegram Voice Chat audio engine."
+            return;
+        }
+
+        if (!isAdmin($uid)) {
+            sendMsg(
+                $chatId,
+                "🔒 Only the bot owner/admin can control VC commands."
+            );
+
+            return;
+        }
+
+        channelCommand(
+            $chat,
+            $command,
+            $args
         );
 
-        exit('OK');
+        return;
     }
 
     /*
-     * ADMIN
+     * Plain text in private chat
+     * works as music search.
      */
 
-    if (isAdmin($userId)) {
+    if (
+        $chatType === 'private' &&
+        $text !== ''
+    ) {
+        showSearch(
+            $uid,
+            $text
+        );
+    }
+}
 
-        /*
-         * /stats
-         */
 
-        if (
-            preg_match(
-                '/^\/stats(?:@\w+)?$/iu',
-                $text
-            )
-        ) {
+/* ============================================================
+   CALLBACK HANDLER
+   ============================================================ */
 
-            $users =
-                loadJson(USERS_FILE);
+function handleCallback(
+    array $callback
+): void {
+    $id =
+        (string)(
+            $callback['id']
+            ?? ''
+        );
 
-            $payments =
-                loadJson(PAYMENTS_FILE);
+    $uid =
+        (int)(
+            $callback['from']['id']
+            ?? 0
+        );
 
-            $keys =
-                loadJson(KEYS_FILE);
+    $data =
+        (string)(
+            $callback['data']
+            ?? ''
+        );
 
-            $active = 0;
+    userRecord($uid);
 
-            foreach ($users as $u) {
-                if (
-                    (int)(
-                        $u['premium_until'] ?? 0
-                    ) > now()
-                ) {
-                    $active++;
-                }
-            }
+    if ($data === 'home') {
+        answerCb($id);
 
-            $pending = 0;
+        sendMsg(
+            $uid,
+            "<b>🎵 MAYAMUSIC</b>",
+            [
+                'reply_markup' =>
+                    mainKeyboard($uid)
+            ]
+        );
 
-            foreach ($payments as $p) {
-                if (
-                    ($p['status'] ?? '') ===
-                    'waiting_review'
-                ) {
-                    $pending++;
-                }
-            }
+        return;
+    }
 
-            $unused = 0;
+    if ($data === 'account') {
+        answerCb($id);
 
-            foreach ($keys as $k) {
-                if (
-                    ($k['used'] ?? false) === false
-                ) {
-                    $unused++;
-                }
-            }
+        sendMsg(
+            $uid,
+            accountText($uid)
+        );
 
-            sendMessage(
-                $chatId,
-                "📊 <b>MAYAMUSIC Stats</b>\n\n" .
-                "Users: <b>" .
-                count($users) .
-                "</b>\n" .
-                "Premium: <b>" .
-                $active .
-                "</b>\n" .
-                "Pending payments: <b>" .
-                $pending .
-                "</b>\n" .
-                "Unused keys: <b>" .
-                $unused .
-                "</b>"
+        return;
+    }
+
+    if ($data === 'premium') {
+        answerCb($id);
+
+        sendPremium($uid);
+
+        return;
+    }
+
+    if ($data === 'search') {
+        answerCb($id);
+
+        sendMsg(
+            $uid,
+            "🔎 Send:\n\n" .
+            "<code>/search song name</code>"
+        );
+
+        return;
+    }
+
+    if ($data === 'redeem') {
+        answerCb($id);
+
+        sendMsg(
+            $uid,
+            "🎟 Send your key:\n\n" .
+            "<code>/redeem MAYA-XXXXXX-XXXXXX-XXXXXX</code>"
+        );
+
+        return;
+    }
+
+    if ($data === 'player') {
+        answerCb($id);
+
+        if (!privateAccess($uid)) {
+            sendMsg(
+                $uid,
+                "🔒 Premium required."
             );
 
-            exit('OK');
+            return;
         }
 
-        /*
-         * /users
-         */
+        sendMsg(
+            $uid,
+            "▶️ <b>Mini Player</b>\n\n" .
+            "Search a song first and then press the Player button."
+        );
 
-        if (
-            preg_match(
-                '/^\/users(?:@\w+)?$/iu',
-                $text
-            )
-        ) {
+        return;
+    }
 
-            $users =
-                loadJson(USERS_FILE);
+    if ($data === 'admin') {
+        answerCb($id);
 
-            $lines = [];
-
-            foreach (
-                array_slice(
-                    array_values($users),
-                    -20
-                ) as $u
-            ) {
-
-                $active =
-                    (int)(
-                        $u['premium_until'] ?? 0
-                    ) > now();
-
-                $lines[] =
-                    '• <code>' .
-                    (int)$u['id'] .
-                    '</code> — ' .
-                    (
-                        $active
-                            ? '🟢'
-                            : '⚪'
-                    );
-            }
-
-            sendMessage(
-                $chatId,
-                "👥 <b>Recent Users</b>\n\n" .
-                (
-                    $lines
-                        ? implode(
-                            "\n",
-                            $lines
-                        )
-                        : 'No users.'
-                )
-            );
-
-            exit('OK');
+        if (isAdmin($uid)) {
+            adminPanel($uid);
         }
 
-        /*
-         * /pending
-         */
+        return;
+    }
 
-        if (
-            preg_match(
-                '/^\/pending(?:@\w+)?$/iu',
-                $text
-            )
-        ) {
+    if ($data === 'akey') {
+        answerCb($id);
 
-            $payments =
-                loadJson(PAYMENTS_FILE);
-
-            $found = false;
-
-            foreach ($payments as $p) {
-
-                if (
-                    ($p['status'] ?? '') !==
-                    'waiting_review'
-                ) {
-                    continue;
-                }
-
-                $found = true;
-
-                sendMessage(
-                    $chatId,
-                    "💰 <b>Payment Review</b>\n\n" .
-                    "ID: <code>" .
-                    h($p['id']) .
-                    "</code>\n" .
-                    "User: <code>" .
-                    (int)$p['user_id'] .
-                    "</code>\n" .
-                    "Amount: ₹" .
-                    (int)$p['amount'] .
-                    "\nUTR: <code>" .
-                    h($p['utr']) .
-                    "</code>",
-                    [
-                        'inline_keyboard' => [
-                            [
-                                [
-                                    'text' =>
-                                        '✅ Approve',
-                                    'callback_data' =>
-                                        'approve:' .
-                                        $p['id']
-                                ],
-                                [
-                                    'text' =>
-                                        '❌ Decline',
-                                    'callback_data' =>
-                                        'decline:' .
-                                        $p['id']
-                                ]
-                            ]
-                        ]
-                    ]
-                );
-            }
-
-            if (!$found) {
-                sendMessage(
-                    $chatId,
-                    "✅ No pending payments."
-                );
-            }
-
-            exit('OK');
+        if (!isAdmin($uid)) {
+            return;
         }
 
-        /*
-         * /genkey DAYS [COUNT]
-         */
-
-        if (
-            preg_match(
-                '/^\/genkey(?:@\w+)?\s+(\d+)(?:\s+(\d+))?$/iu',
-                $text,
-                $m
-            )
-        ) {
-
-            $days =
-                max(
-                    1,
-                    (int)$m[1]
-                );
-
-            $count =
-                max(
-                    1,
-                    min(
-                        100,
-                        (int)($m[2] ?? 1)
-                    )
-                );
-
-            $keys = [];
-
-            for ($i = 0; $i < $count; $i++) {
-
-                $item =
-                    generateRedeemKey($days);
-
-                $keys[] =
-                    '<code>' .
-                    h($item['key']) .
-                    '</code>';
-            }
-
-            sendMessage(
-                $chatId,
-                "🔑 <b>Generated Keys</b>\n\n" .
-                "Days: <b>" .
-                $days .
-                "</b>\n" .
-                "Count: <b>" .
-                $count .
-                "</b>\n\n" .
-                implode(
-                    "\n",
-                    $keys
-                )
+        $key =
+            createRedeemKey(
+                30,
+                $uid
             );
 
-            exit('OK');
-        }
+        sendMsg(
+            $uid,
+            "🎟 <b>NEW 30 DAY KEY</b>\n\n" .
+            "<code>" .
+            esc($key) .
+            "</code>"
+        );
 
-        /*
-         * /give USER_ID DAYS
-         */
+        return;
+    }
 
-        if (
-            preg_match(
-                '/^\/give(?:@\w+)?\s+(\d+)\s+(\d+)$/iu',
-                $text,
-                $m
-            )
-        ) {
+    if ($data === 'akeys') {
+        answerCb($id);
 
-            $target =
-                (int)$m[1];
+        adminKeys($uid);
 
-            $days =
-                max(
-                    1,
-                    (int)$m[2]
-                );
+        return;
+    }
 
-            $user =
-                activatePremium(
-                    $target,
-                    $days
-                );
+    if ($data === 'apays') {
+        answerCb($id);
 
-            sendMessage(
-                $chatId,
-                "✅ Premium granted.\n\n" .
-                "User: <code>" .
-                $target .
-                "</code>\n" .
-                "Days: <b>" .
-                $days .
-                "</b>\n" .
-                "Until: <b>" .
-                h(premiumUntilText($user)) .
-                "</b>"
-            );
+        adminPayments($uid);
 
-            sendMessage(
-                $target,
-                "🎉 <b>Premium Granted</b>\n\n" .
-                "Days: " .
-                $days .
-                "\nValid until: <b>" .
-                h(premiumUntilText($user)) .
-                "</b>"
-            );
+        return;
+    }
 
-            exit('OK');
-        }
+    if ($data === 'ausers') {
+        answerCb($id);
 
-        /*
-         * /revoke USER_ID
-         */
+        adminUsers($uid);
 
-        if (
-            preg_match(
-                '/^\/revoke(?:@\w+)?\s+(\d+)$/iu',
-                $text,
-                $m
-            )
-        ) {
+        return;
+    }
 
-            $target =
-                (int)$m[1];
+    if ($data === 'astats') {
+        answerCb($id);
 
-            $user =
-                getUser($target);
+        adminStats($uid);
 
-            $user['premium_until'] = 0;
-
-            saveUser($user);
-
-            sendMessage(
-                $chatId,
-                "✅ Premium revoked for <code>" .
-                $target .
-                "</code>"
-            );
-
-            sendMessage(
-                $target,
-                "ℹ️ Your MAYAMUSIC Premium access " .
-                "has been revoked."
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * /broadcast
-         */
-
-        if (
-            preg_match(
-                '/^\/broadcast(?:@\w+)?\s+(.+)$/isu',
-                $text,
-                $m
-            )
-        ) {
-
-            $users =
-                loadJson(USERS_FILE);
-
-            $broadcastText =
-                trim($m[1]);
-
-            $sent = 0;
-
-            foreach ($users as $u) {
-
-                $target =
-                    (int)($u['id'] ?? 0);
-
-                if ($target <= 0) {
-                    continue;
-                }
-
-                $result =
-                    sendMessage(
-                        $target,
-                        "📢 <b>MAYAMUSIC Announcement</b>\n\n" .
-                        h($broadcastText)
-                    );
-
-                if ($result['ok'] ?? false) {
-                    $sent++;
-                }
-            }
-
-            sendMessage(
-                $chatId,
-                "📢 Broadcast completed.\n\n" .
-                "Sent: <b>" .
-                $sent .
-                "</b>"
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * /adminapp
-         */
-
-        if (
-            preg_match(
-                '/^\/adminapp(?:@\w+)?$/iu',
-                $text
-            )
-        ) {
-
-            $url =
-                WEBAPP_URL .
-                '?action=admin&id=' .
-                $userId;
-
-            sendMessage(
-                $chatId,
-                "🛠 <b>MAYAMUSIC Admin Panel</b>\n\n" .
-                "Open the admin dashboard:",
-                [
-                    'inline_keyboard' => [
-                        [
-                            [
-                                'text' =>
-                                    '🛠 Open Admin Panel',
-                                'web_app' => [
-                                    'url' => $url
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * /setwebhook
-         */
-
-        if (
-            preg_match(
-                '/^\/setwebhook(?:@\w+)?$/iu',
-                $text
-            )
-        ) {
-
-            $result =
-                telegram('setWebhook', [
-                    'url' => WEBAPP_URL,
-                    'allowed_updates' =>
-                        json_encode([
-                            'message',
-                            'callback_query',
-                            'pre_checkout_query'
-                        ])
-                ]);
-
-            sendMessage(
-                $chatId,
-                ($result['ok'] ?? false)
-                    ? "✅ Webhook set successfully."
-                    : "❌ Webhook error:\n" .
-                      h(
-                          (string)(
-                              $result['description'] ??
-                              'Unknown error'
-                          )
-                      )
-            );
-
-            exit('OK');
-        }
-
-        /*
-         * /delwebhook
-         */
-
-        if (
-            preg_match(
-                '/^\/delwebhook(?:@\w+)?$/iu',
-                $text
-            )
-        ) {
-
-            $result =
-                telegram(
-                    'deleteWebhook'
-                );
-
-            sendMessage(
-                $chatId,
-                ($result['ok'] ?? false)
-                    ? "✅ Webhook deleted."
-                    : "❌ Could not delete webhook."
-            );
-
-            exit('OK');
-        }
+        return;
     }
 
     /*
-     * Unknown command
+     * MUSIC SELECTION
      */
 
     if (
         str_starts_with(
-            $text,
-            '/'
+            $data,
+            'pick:'
         )
     ) {
-
-        sendMessage(
-            $chatId,
-            "❓ Unknown command.\n\n" .
-            "Use /help"
+        answerCb(
+            $id,
+            'Preparing player…'
         );
 
-        exit('OK');
+        $parts =
+            explode(
+                ':',
+                $data
+            );
+
+        $session =
+            $parts[1] ?? '';
+
+        $index =
+            (int)(
+                $parts[2] ?? -1
+            );
+
+        $searches =
+            readJson('searches');
+
+        $item =
+            $searches[$session]
+            ?? null;
+
+        if (
+            !is_array($item)
+        ) {
+            sendMsg(
+                $uid,
+                "❌ Search session expired. Search again."
+            );
+
+            return;
+        }
+
+        if (
+            (int)(
+                $item['user_id']
+                ?? 0
+            ) !== $uid
+        ) {
+            sendMsg(
+                $uid,
+                "❌ This result does not belong to you."
+            );
+
+            return;
+        }
+
+        if (
+            (int)(
+                $item['expires_at']
+                ?? 0
+            ) < now()
+        ) {
+            sendMsg(
+                $uid,
+                "❌ Search session expired."
+            );
+
+            return;
+        }
+
+        if (!privateAccess($uid)) {
+            sendMsg(
+                $uid,
+                "🔒 Premium required."
+            );
+
+            return;
+        }
+
+        $queue =
+            $item['results']
+            ?? [];
+
+        $song =
+            $queue[$index]
+            ?? null;
+
+        if (
+            !is_array($song) ||
+            empty(
+                $song['download_url']
+            )
+        ) {
+            sendMsg(
+                $uid,
+                "❌ Invalid song."
+            );
+
+            return;
+        }
+
+        /*
+         * Artwork is resolved separately
+         * because supplied API has no thumbnail.
+         */
+
+        $art =
+            artwork(
+                $song['title'],
+                $song['artists']
+            );
+
+        /*
+         * Add artwork to every queue item
+         */
+
+        foreach (
+            $queue as $qIndex => $queueSong
+        ) {
+            if (
+                empty(
+                    $queueSong['artwork']
+                )
+            ) {
+                $queue[$qIndex]['artwork'] =
+                    artwork(
+                        $queueSong['title'],
+                        $queueSong['artists']
+                    );
+            }
+        }
+
+        $song =
+            $queue[$index];
+
+        $token =
+            createPlayerToken(
+                $song,
+                $queue
+            );
+
+        $caption =
+            "<b>▶️ " .
+            esc($song['title']) .
+            "</b>\n" .
+            esc($song['artists']);
+
+        if (
+            !empty(
+                $song['album']
+            )
+        ) {
+            $caption .=
+                "\n💿 " .
+                esc($song['album']);
+        }
+
+        if (
+            !empty(
+                $song['duration']
+            )
+        ) {
+            $caption .=
+                "\n⏱ " .
+                esc($song['duration']);
+        }
+
+        $buttons = [
+            [
+                [
+                    'text' =>
+                        '🎧 OPEN MINI PLAYER',
+                    'web_app' => [
+                        'url' =>
+                            playerUrl($token)
+                    ]
+                ]
+            ]
+        ];
+
+        /*
+         * If artwork exists send photo.
+         * Otherwise normal message.
+         */
+
+        if ($art !== '') {
+            tg(
+                'sendPhoto',
+                [
+                    'chat_id' => $uid,
+                    'photo' => $art,
+                    'caption' => $caption,
+                    'parse_mode' => 'HTML',
+                    'reply_markup' =>
+                        kb($buttons)
+                ]
+            );
+        } else {
+            sendMsg(
+                $uid,
+                $caption,
+                [
+                    'reply_markup' =>
+                        kb($buttons)
+                ]
+            );
+        }
+
+        return;
     }
 
     /*
-     * Plain text in private/group:
-     * treat as music search.
+     * UTR BUTTON
      */
 
     if (
-        $text !== '' &&
-        mb_strlen($text) >= 2
+        str_starts_with(
+            $data,
+            'utr:'
+        )
     ) {
+        answerCb($id);
 
-        sendSearchResults(
-            $chatId,
-            $text,
-            !$groupMode
+        $paymentId =
+            substr(
+                $data,
+                4
+            );
+
+        sendMsg(
+            $uid,
+            "🧾 <b>SUBMIT UTR</b>\n\n" .
+            "Payment ID:\n" .
+            "<code>" .
+            esc($paymentId) .
+            "</code>\n\n" .
+            "Send:\n" .
+            "<code>/utr " .
+            esc($paymentId) .
+            " YOUR_UTR</code>"
         );
 
-        exit('OK');
+        return;
     }
 
-    exit('OK');
+    /*
+     * PAYMENT APPROVAL
+     */
+
+    if (
+        str_starts_with(
+            $data,
+            'approve:'
+        )
+    ) {
+        if (!isAdmin($uid)) {
+            answerCb(
+                $id,
+                'Access denied',
+                true
+            );
+
+            return;
+        }
+
+        answerCb(
+            $id,
+            'Approved'
+        );
+
+        processPaymentDecision(
+            $uid,
+            substr(
+                $data,
+                8
+            ),
+            true
+        );
+
+        return;
+    }
+
+    if (
+        str_starts_with(
+            $data,
+            'decline:'
+        )
+    ) {
+        if (!isAdmin($uid)) {
+            answerCb(
+                $id,
+                'Access denied',
+                true
+            );
+
+            return;
+        }
+
+        answerCb(
+            $id,
+            'Declined'
+        );
+
+        processPaymentDecision(
+            $uid,
+            substr(
+                $data,
+                8
+            ),
+            false
+        );
+
+        return;
+    }
 }
 
-/* =========================================================
-   GET HEALTH / RAILWAY CHECK
-   ========================================================= */
 
-header(
-    'Content-Type: text/html; charset=utf-8'
+/* ============================================================
+   MINI APP PLAYER
+   ============================================================ */
+
+function miniApp(): void
+{
+    $token =
+        trim(
+            (string)(
+                $_GET['token']
+                ?? ''
+            )
+        );
+
+    $players =
+        readJson('players');
+
+    $player =
+        $players[$token]
+        ?? null;
+
+    header(
+        'Content-Type: text/html; charset=UTF-8'
+    );
+
+    if (
+        !is_array($player)
+    ) {
+        http_response_code(404);
+
+        echo '
+        <!doctype html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>MAYAMUSIC</title>
+        <style>
+        body{
+            margin:0;
+            background:#08090d;
+            color:white;
+            font-family:system-ui;
+            display:flex;
+            min-height:100vh;
+            align-items:center;
+            justify-content:center;
+        }
+        </style>
+        </head>
+        <body>
+        <h2>Player expired</h2>
+        </body>
+        </html>';
+
+        return;
+    }
+
+    if (
+        (int)(
+            $player['expires_at']
+            ?? 0
+        ) < now()
+    ) {
+        http_response_code(410);
+
+        echo '
+        <!doctype html>
+        <html>
+        <body style="
+            background:#08090d;
+            color:white;
+            font-family:system-ui;
+            text-align:center;
+            padding:60px;
+        ">
+        <h2>Player expired</h2>
+        <p>Search the song again.</p>
+        </body>
+        </html>';
+
+        return;
+    }
+
+    $song =
+        $player['song']
+        ?? [];
+
+    $queue =
+        $player['queue']
+        ?? [];
+
+    $songTitle =
+        json_encode(
+            (string)(
+                $song['title']
+                ?? ''
+            ),
+            JSON_UNESCAPED_UNICODE
+        );
+
+    $songArtist =
+        json_encode(
+            (string)(
+                $song['artists']
+                ?? ''
+            ),
+            JSON_UNESCAPED_UNICODE
+        );
+
+    $songUrl =
+        json_encode(
+            (string)(
+                $song['download_url']
+                ?? ''
+            ),
+            JSON_UNESCAPED_SLASHES
+        );
+
+    $songArt =
+        json_encode(
+            (string)(
+                $song['artwork']
+                ?? artwork(
+                    (string)(
+                        $song['title']
+                        ?? ''
+                    ),
+                    (string)(
+                        $song['artists']
+                        ?? ''
+                    )
+                )
+            ),
+            JSON_UNESCAPED_SLASHES
+        );
+
+    $queueJson =
+        json_encode(
+            $queue,
+            JSON_UNESCAPED_UNICODE |
+            JSON_UNESCAPED_SLASHES
+        );
+
+    echo '<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1,viewport-fit=cover"
+>
+
+<title>MAYAMUSIC</title>
+
+<style>
+
+*{
+    box-sizing:border-box;
+    -webkit-tap-highlight-color:transparent;
+}
+
+body{
+    margin:0;
+    min-height:100vh;
+    background:
+        radial-gradient(
+            circle at 50% 0%,
+            #292d3a 0%,
+            #0c0d12 48%,
+            #07080b 100%
+        );
+    color:#fff;
+    font-family:
+        Inter,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        sans-serif;
+}
+
+.app{
+    min-height:100vh;
+    padding:
+        calc(20px + env(safe-area-inset-top))
+        20px
+        calc(28px + env(safe-area-inset-bottom));
+    display:flex;
+    flex-direction:column;
+}
+
+.top{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:12px;
+}
+
+.brand{
+    font-weight:900;
+    letter-spacing:.5px;
+}
+
+.badge{
+    font-size:11px;
+    opacity:.5;
+}
+
+.cover{
+    width:min(84vw,360px);
+    aspect-ratio:1;
+    object-fit:cover;
+    border-radius:28px;
+    margin:24px auto;
+    display:block;
+    background:#171920;
+    box-shadow:
+        0 24px 80px rgba(0,0,0,.55);
+}
+
+.title{
+    text-align:center;
+    font-size:24px;
+    font-weight:900;
+    line-height:1.2;
+    margin-top:4px;
+}
+
+.artist{
+    text-align:center;
+    opacity:.62;
+    margin-top:8px;
+    font-size:14px;
+}
+
+.progressArea{
+    margin-top:26px;
+}
+
+.progress{
+    width:100%;
+    height:5px;
+    background:#292c34;
+    border-radius:100px;
+    overflow:hidden;
+    cursor:pointer;
+}
+
+.progressFill{
+    width:0%;
+    height:100%;
+    background:#fff;
+    border-radius:100px;
+}
+
+.times{
+    display:flex;
+    justify-content:space-between;
+    margin-top:8px;
+    font-size:11px;
+    opacity:.5;
+}
+
+.controls{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:18px;
+    margin-top:24px;
+}
+
+.control{
+    width:58px;
+    height:58px;
+    border:0;
+    border-radius:50%;
+    background:#1c1f27;
+    color:#fff;
+    font-size:20px;
+    box-shadow:
+        0 10px 30px rgba(0,0,0,.2);
+}
+
+.control:active{
+    transform:scale(.92);
+}
+
+.play{
+    width:74px;
+    height:74px;
+    background:#fff;
+    color:#000;
+    font-size:25px;
+}
+
+.panelButtons{
+    display:flex;
+    gap:10px;
+    margin-top:24px;
+}
+
+.panelButton{
+    flex:1;
+    border:0;
+    border-radius:15px;
+    background:#171a21;
+    color:#fff;
+    padding:14px 10px;
+    font-size:13px;
+}
+
+.status{
+    text-align:center;
+    font-size:11px;
+    opacity:.45;
+    margin-top:14px;
+}
+
+.lyrics{
+    margin-top:24px;
+    padding:18px;
+    background:rgba(255,255,255,.035);
+    border-radius:20px;
+    max-height:31vh;
+    overflow:auto;
+    white-space:pre-wrap;
+    text-align:center;
+    line-height:1.8;
+    font-size:14px;
+}
+
+.queue{
+    display:none;
+    margin-top:18px;
+    padding:16px;
+    background:rgba(255,255,255,.04);
+    border-radius:20px;
+    max-height:30vh;
+    overflow:auto;
+}
+
+.queueItem{
+    padding:12px 8px;
+    border-bottom:1px solid rgba(255,255,255,.07);
+    font-size:13px;
+}
+
+.queueItem:last-child{
+    border-bottom:0;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="app">
+
+<div class="top">
+    <div class="brand">MAYAMUSIC</div>
+    <div class="badge">MINI PLAYER</div>
+</div>
+
+<img
+id="cover"
+class="cover"
+src=""
+alt="Artwork"
+>
+
+<div
+id="title"
+class="title"
+></div>
+
+<div
+id="artist"
+class="artist"
+></div>
+
+<div class="progressArea">
+
+<div
+id="progress"
+class="progress"
+>
+<div
+id="progressFill"
+class="progressFill"
+></div>
+</div>
+
+<div class="times">
+<span id="current">0:00</span>
+<span id="duration">0:00</span>
+</div>
+
+</div>
+
+<div class="controls">
+
+<button
+id="prev"
+class="control"
+>
+⏮
+</button>
+
+<button
+id="play"
+class="control play"
+>
+▶
+</button>
+
+<button
+id="next"
+class="control"
+>
+⏭
+</button>
+
+</div>
+
+<div class="panelButtons">
+
+<button
+id="lyricsButton"
+class="panelButton"
+>
+🎤 Lyrics
+</button>
+
+<button
+id="queueButton"
+class="panelButton"
+>
+☰ Queue
+</button>
+
+</div>
+
+<div
+id="lyrics"
+class="lyrics"
+>
+Loading lyrics…
+</div>
+
+<div
+id="queue"
+class="queue"
+></div>
+
+<div
+id="status"
+class="status"
+>
+Ready
+</div>
+
+<audio
+id="audio"
+preload="auto"
+></audio>
+
+</div>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+<script>
+
+const tg =
+    window.Telegram &&
+    window.Telegram.WebApp
+        ? window.Telegram.WebApp
+        : null;
+
+if(tg){
+    tg.ready();
+    tg.expand();
+}
+
+let queue =
+    ' . $queueJson . ';
+
+if(!Array.isArray(queue)){
+    queue = [];
+}
+
+let currentIndex = 0;
+
+let currentSong =
+    ' . $songUrl . ';
+
+let currentTitle =
+    ' . $songTitle . ';
+
+let currentArtist =
+    ' . $songArtist . ';
+
+let currentArtwork =
+    ' . $songArt . ';
+
+const audio =
+    document.getElementById("audio");
+
+const cover =
+    document.getElementById("cover");
+
+const title =
+    document.getElementById("title");
+
+const artist =
+    document.getElementById("artist");
+
+const playButton =
+    document.getElementById("play");
+
+const previousButton =
+    document.getElementById("prev");
+
+const nextButton =
+    document.getElementById("next");
+
+const progress =
+    document.getElementById("progress");
+
+const progressFill =
+    document.getElementById("progressFill");
+
+const currentTime =
+    document.getElementById("current");
+
+const duration =
+    document.getElementById("duration");
+
+const lyrics =
+    document.getElementById("lyrics");
+
+const queueBox =
+    document.getElementById("queue");
+
+const status =
+    document.getElementById("status");
+
+function timeFormat(seconds){
+
+    seconds =
+        Math.floor(
+            Number(seconds) || 0
+        );
+
+    const minutes =
+        Math.floor(
+            seconds / 60
+        );
+
+    const secs =
+        seconds % 60;
+
+    return (
+        minutes +
+        ":" +
+        String(secs).padStart(
+            2,
+            "0"
+        )
+    );
+}
+
+function renderQueue(){
+
+    queueBox.innerHTML = "";
+
+    queue.forEach(
+        (song,index) => {
+
+            const item =
+                document.createElement(
+                    "div"
+                );
+
+            item.className =
+                "queueItem";
+
+            item.textContent =
+                (
+                    index + 1
+                ) +
+                ". " +
+                (
+                    song.title ||
+                    "Unknown"
+                ) +
+                " — " +
+                (
+                    song.artists ||
+                    "Unknown Artist"
+                );
+
+            item.onclick = () => {
+
+                currentIndex =
+                    index;
+
+                loadSong(
+                    queue[
+                        currentIndex
+                    ],
+                    true
+                );
+            };
+
+            queueBox.appendChild(
+                item
+            );
+        }
+    );
+}
+
+function loadLyrics(
+    songTitle,
+    songArtist
+){
+
+    lyrics.textContent =
+        "Loading lyrics…";
+
+    const url =
+        location.pathname +
+        "?action=lyrics" +
+        "&title=" +
+        encodeURIComponent(
+            songTitle
+        ) +
+        "&artist=" +
+        encodeURIComponent(
+            songArtist
+        );
+
+    fetch(url)
+        .then(
+            response =>
+                response.json()
+        )
+        .then(
+            data => {
+
+                if(
+                    data.synced &&
+                    data.synced.trim()
+                ){
+                    lyrics.textContent =
+                        data.synced;
+                    return;
+                }
+
+                if(
+                    data.plain &&
+                    data.plain.trim()
+                ){
+                    lyrics.textContent =
+                        data.plain;
+                    return;
+                }
+
+                lyrics.textContent =
+                    "Lyrics not found";
+            }
+        )
+        .catch(
+            () => {
+                lyrics.textContent =
+                    "Lyrics unavailable";
+            }
+        );
+}
+
+function loadSong(
+    song,
+    autoPlay
+){
+
+    if(!song){
+        return;
+    }
+
+    currentSong =
+        song.download_url || "";
+
+    currentTitle =
+        song.title || "Unknown";
+
+    currentArtist =
+        song.artists ||
+        "Unknown Artist";
+
+    currentArtwork =
+        song.artwork ||
+        "";
+
+    title.textContent =
+        currentTitle;
+
+    artist.textContent =
+        currentArtist;
+
+    if(currentArtwork){
+        cover.src =
+            currentArtwork;
+    }else{
+        cover.removeAttribute(
+            "src"
+        );
+    }
+
+    audio.pause();
+
+    audio.src =
+        currentSong;
+
+    audio.load();
+
+    status.textContent =
+        "Ready";
+
+    loadLyrics(
+        currentTitle,
+        currentArtist
+    );
+
+    renderQueue();
+
+    if(autoPlay){
+        startPlayback();
+    }
+}
+
+function startPlayback(){
+
+    const result =
+        audio.play();
+
+    if(result){
+
+        result.then(
+            () => {
+                playButton.textContent =
+                    "⏸";
+
+                status.textContent =
+                    "Playing";
+            }
+        ).catch(
+            () => {
+
+                playButton.textContent =
+                    "▶";
+
+                status.textContent =
+                    "Tap Play to start";
+            }
+        );
+
+    }else{
+        playButton.textContent =
+            "⏸";
+    }
+}
+
+function pausePlayback(){
+
+    audio.pause();
+
+    playButton.textContent =
+        "▶";
+
+    status.textContent =
+        "Paused";
+}
+
+playButton.onclick = () => {
+
+    if(audio.paused){
+        startPlayback();
+    }else{
+        pausePlayback();
+    }
+
+};
+
+audio.addEventListener(
+    "timeupdate",
+    () => {
+
+        const current =
+            audio.currentTime || 0;
+
+        const total =
+            audio.duration || 0;
+
+        currentTime.textContent =
+            timeFormat(current);
+
+        duration.textContent =
+            timeFormat(total);
+
+        if(total > 0){
+
+            progressFill.style.width =
+                (
+                    current /
+                    total *
+                    100
+                ) +
+                "%";
+        }
+    }
 );
 
-echo '<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
- content="width=device-width,initial-scale=1">
-<title>MAYAMUSIC</title>
-<style>
-body{
- margin:0;
- min-height:100vh;
- display:grid;
- place-items:center;
- background:#08090d;
- color:#fff;
- font-family:system-ui;
+audio.addEventListener(
+    "loadedmetadata",
+    () => {
+
+        duration.textContent =
+            timeFormat(
+                audio.duration
+            );
+    }
+);
+
+audio.addEventListener(
+    "playing",
+    () => {
+
+        playButton.textContent =
+            "⏸";
+
+        status.textContent =
+            "Playing";
+    }
+);
+
+audio.addEventListener(
+    "pause",
+    () => {
+
+        if(
+            !audio.ended
+        ){
+            playButton.textContent =
+                "▶";
+        }
+    }
+);
+
+audio.addEventListener(
+    "error",
+    () => {
+
+        status.textContent =
+            "Audio could not be played";
+
+        playButton.textContent =
+            "▶";
+    }
+);
+
+audio.addEventListener(
+    "ended",
+    () => {
+
+        /*
+         * AUTO NEXT
+         */
+
+        if(
+            currentIndex + 1 <
+            queue.length
+        ){
+
+            currentIndex++;
+
+            loadSong(
+                queue[
+                    currentIndex
+                ],
+                true
+            );
+
+        }else{
+
+            playButton.textContent =
+                "▶";
+
+            status.textContent =
+                "Queue finished";
+        }
+
+    }
+);
+
+previousButton.onclick =
+    () => {
+
+        if(
+            audio.currentTime > 5
+        ){
+
+            audio.currentTime =
+                0;
+
+            return;
+        }
+
+        if(
+            currentIndex > 0
+        ){
+
+            currentIndex--;
+
+            loadSong(
+                queue[
+                    currentIndex
+                ],
+                true
+            );
+
+        }else{
+
+            audio.currentTime =
+                0;
+        }
+    };
+
+nextButton.onclick =
+    () => {
+
+        if(
+            currentIndex + 1 <
+            queue.length
+        ){
+
+            currentIndex++;
+
+            loadSong(
+                queue[
+                    currentIndex
+                ],
+                true
+            );
+
+        }else{
+
+            status.textContent =
+                "No next song";
+        }
+    };
+
+progress.onclick =
+    event => {
+
+        const rect =
+            progress.getBoundingClientRect();
+
+        const percentage =
+            (
+                event.clientX -
+                rect.left
+            ) /
+            rect.width;
+
+        if(
+            audio.duration
+        ){
+
+            audio.currentTime =
+                percentage *
+                audio.duration;
+        }
+    };
+
+document
+    .getElementById(
+        "lyricsButton"
+    )
+    .onclick = () => {
+
+        lyrics.scrollIntoView({
+            behavior:"smooth",
+            block:"center"
+        });
+
+    };
+
+document
+    .getElementById(
+        "queueButton"
+    )
+    .onclick = () => {
+
+        queueBox.style.display =
+            queueBox.style.display ===
+            "block"
+                ? "none"
+                : "block";
+
+    };
+
+if(queue.length === 0){
+
+    queue = [
+        {
+            title:
+                currentTitle,
+
+            artists:
+                currentArtist,
+
+            download_url:
+                currentSong,
+
+            artwork:
+                currentArtwork
+        }
+    ];
+
 }
-.card{
- text-align:center;
- padding:30px;
- border-radius:25px;
- background:#15161e;
- border:1px solid #282934;
+
+let startingIndex = 0;
+
+for(
+    let i = 0;
+    i < queue.length;
+    i++
+){
+
+    if(
+        queue[i].download_url ===
+        currentSong
+    ){
+
+        startingIndex = i;
+        break;
+    }
 }
-.ok{
- color:#71ffae;
- font-weight:800;
-}
-</style>
-</head>
-<body>
-<div class="card">
-<h1>🎵 MAYAMUSIC</h1>
-<p class="ok">● ONLINE</p>
-<p>Telegram music bot backend is running.</p>
-<p>Webhook URL:</p>
-<small>' .
-h(WEBAPP_URL) .
-'</small>
-</div>
+
+currentIndex =
+    startingIndex;
+
+loadSong(
+    queue[currentIndex],
+    false
+);
+
+renderQueue();
+
+</script>
+
 </body>
+
 </html>';
+}
+
+
+/* ============================================================
+   MINI APP API
+   ============================================================ */
+
+function miniApi(): void
+{
+    $action =
+        (string)(
+            $_GET['action']
+            ?? ''
+        );
+
+    if ($action === 'lyrics') {
+        $title =
+            trim(
+                (string)(
+                    $_GET['title']
+                    ?? ''
+                )
+            );
+
+        $artist =
+            trim(
+                (string)(
+                    $_GET['artist']
+                    ?? ''
+                )
+            );
+
+        jsonReply(
+            getLyrics(
+                $title,
+                $artist
+            )
+        );
+    }
+
+    jsonReply([
+        'ok' => false,
+        'error' => 'Unknown action'
+    ]);
+}
+
+
+/* ============================================================
+   HEALTH PAGE
+   ============================================================ */
+
+function healthPage(): void
+{
+    header(
+        'Content-Type: text/plain; charset=UTF-8'
+    );
+
+    echo
+        "MAYAMUSIC ONLINE\n" .
+        "PHP: " .
+        PHP_VERSION .
+        "\n" .
+        "Bot token: " .
+        (
+            configBotToken() !== ''
+                ? 'configured'
+                : 'missing'
+        ) .
+        "\n" .
+        "WebApp: " .
+        configWebAppUrl() .
+        "\n" .
+        "Time: " .
+        date('c') .
+        "\n";
+}
+
+
+/* ============================================================
+   HTTP ROUTER
+   ============================================================ */
+
+function handleHttp(): bool
+{
+    if (
+        isset($_GET['health'])
+    ) {
+        healthPage();
+        return true;
+    }
+
+    if (
+        isset($_GET['mini'])
+    ) {
+        miniApp();
+        return true;
+    }
+
+    if (
+        isset($_GET['action'])
+    ) {
+        miniApi();
+        return true;
+    }
+
+    return false;
+}
+
+
+/* ============================================================
+   TELEGRAM WEBHOOK UPDATE
+   ============================================================ */
+
+function processWebhook(): void
+{
+    $raw =
+        file_get_contents(
+            'php://input'
+        );
+
+    if (
+        $raw === false ||
+        trim($raw) === ''
+    ) {
+        return;
+    }
+
+    $update =
+        json_decode(
+            $raw,
+            true
+        );
+
+    if (
+        !is_array($update)
+    ) {
+        return;
+    }
+
+    /*
+     * CALLBACK
+     */
+
+    if (
+        isset(
+            $update['callback_query']
+        )
+    ) {
+        handleCallback(
+            $update['callback_query']
+        );
+
+        return;
+    }
+
+    /*
+     * TELEGRAM STARS CHECK
+     *
+     * MAYAMUSIC uses UPI instead.
+     */
+
+    if (
+        isset(
+            $update['pre_checkout_query']
+        )
+    ) {
+        $query =
+            $update[
+                'pre_checkout_query'
+            ];
+
+        tg(
+            'answerPreCheckoutQuery',
+            [
+                'pre_checkout_query_id' =>
+                    $query['id'],
+                'ok' => 'false',
+                'error_message' =>
+                    'Stars payments are not used. Please use UPI Premium.'
+            ]
+        );
+
+        return;
+    }
+
+    /*
+     * MESSAGE
+     */
+
+    if (
+        isset(
+            $update['message']
+        )
+    ) {
+        handleMessage(
+            $update['message']
+        );
+    }
+}
+
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+
+cleanExpiredData();
+
+if (
+    handleHttp()
+) {
+    exit;
+}
+
+if (
+    php_sapi_name() !== 'cli'
+) {
+    processWebhook();
+}
+
 ?>
