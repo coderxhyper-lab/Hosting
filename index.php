@@ -1,71 +1,43 @@
 <?php
-/**
- * Telegram Music Bot
- * Single-file PHP 8.2+
- *
- * IMPORTANT:
- * Put your NEW BotFather token here after revoking
- * the token that was exposed in chat.
- */
 
-// ======================================================
-// CONFIG
-// ======================================================
+/*
+|--------------------------------------------------------------------------
+| TELEGRAM MUSIC BOT - SINGLE FILE
+| PHP 8.2+
+|--------------------------------------------------------------------------
+*/
 
 const BOT_TOKEN = '8817347840:AAFpsNeTkzHqjnlqkV_18AjMEgIX-FXHmQo';
 
-const ADMIN_ID = 8897821078; // <-- Your Telegram numeric ID
+const ADMIN_ID = 8897821078;
 
 const MUSIC_API =
     'https://music-search-api-frnb.vercel.app/search';
 
 const REQUIRED_STARS = 5;
 
-// Funny image shown to unpaid users.
-// Replace with your own HTTPS JPG/PNG if desired.
-const MEME_IMAGE =
-    'https://placehold.co/800x500/jpg?text=Pay+5+Stars';
+const DATA_DIR = __DIR__ . '/music_data';
 
 
-// ======================================================
-// BASIC STORAGE
-// ======================================================
+// ============================================================================
+// STORAGE
+// ============================================================================
 
-function dataDir(): string
-{
-    $dir = __DIR__ . '/bot_data';
-
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0755, true);
-    }
-
-    return $dir;
+if (!is_dir(DATA_DIR)) {
+    mkdir(DATA_DIR, 0755, true);
 }
 
-function usersFile(): string
+function jsonFile(string $name): string
 {
-    return dataDir() . '/users.json';
+    return DATA_DIR . '/' . $name . '.json';
 }
 
-function searchesFile(): string
+function readData(string $name): array
 {
-    return dataDir() . '/searches.json';
-}
+    $file = jsonFile($name);
 
-function favoritesFile(): string
-{
-    return dataDir() . '/favorites.json';
-}
-
-function queuesFile(): string
-{
-    return dataDir() . '/queues.json';
-}
-
-function loadJson(string $file, array $default = []): array
-{
     if (!file_exists($file)) {
-        return $default;
+        return [];
     }
 
     $data = json_decode(
@@ -73,13 +45,16 @@ function loadJson(string $file, array $default = []): array
         true
     );
 
-    return is_array($data) ? $data : $default;
+    return is_array($data) ? $data : [];
 }
 
-function saveJson(string $file, array $data): void
-{
+function writeData(
+    string $name,
+    array $data
+): void {
+
     file_put_contents(
-        $file,
+        jsonFile($name),
         json_encode(
             $data,
             JSON_PRETTY_PRINT |
@@ -91,77 +66,11 @@ function saveJson(string $file, array $data): void
 }
 
 
-// ======================================================
-// USER ACCESS
-// ======================================================
+// ============================================================================
+// TELEGRAM
+// ============================================================================
 
-function isAdmin(int|string $userId): bool
-{
-    return (string)$userId === (string)ADMIN_ID;
-}
-
-function userHasAccess(int|string $userId): bool
-{
-    if (isAdmin($userId)) {
-        return true;
-    }
-
-    $users = loadJson(usersFile());
-
-    return !empty($users[(string)$userId]['paid']);
-}
-
-function saveUser(array $user): void
-{
-    $users = loadJson(usersFile());
-
-    $id = (string)$user['id'];
-
-    if (!isset($users[$id])) {
-        $users[$id] = [
-            'id' => $user['id'],
-            'username' => $user['username'] ?? '',
-            'first_name' => $user['first_name'] ?? '',
-            'paid' => false,
-            'created_at' => time()
-        ];
-    }
-
-    $users[$id]['username'] =
-        $user['username'] ?? $users[$id]['username'];
-
-    $users[$id]['first_name'] =
-        $user['first_name'] ?? $users[$id]['first_name'];
-
-    $users[$id]['last_seen'] = time();
-
-    saveJson(usersFile(), $users);
-}
-
-function grantAccess(int|string $userId): void
-{
-    $users = loadJson(usersFile());
-
-    $id = (string)$userId;
-
-    if (!isset($users[$id])) {
-        $users[$id] = [
-            'id' => $userId
-        ];
-    }
-
-    $users[$id]['paid'] = true;
-    $users[$id]['paid_at'] = time();
-
-    saveJson(usersFile(), $users);
-}
-
-
-// ======================================================
-// TELEGRAM API
-// ======================================================
-
-function telegram(
+function tg(
     string $method,
     array $data = []
 ): array {
@@ -186,20 +95,12 @@ function telegram(
 
     curl_close($ch);
 
-    $json = json_decode(
+    return json_decode(
         $response ?: '',
         true
-    );
-
-    return is_array($json)
-        ? $json
-        : [];
+    ) ?: [];
 }
 
-
-// ======================================================
-// MESSAGES
-// ======================================================
 
 function sendMessage(
     int|string $chatId,
@@ -214,22 +115,24 @@ function sendMessage(
         'disable_web_page_preview' => true
     ];
 
-    if ($keyboard !== null) {
-        $data['reply_markup'] = json_encode([
-            'inline_keyboard' => $keyboard
-        ]);
+    if ($keyboard) {
+        $data['reply_markup'] =
+            json_encode([
+                'inline_keyboard' => $keyboard
+            ]);
     }
 
-    return telegram(
+    return tg(
         'sendMessage',
         $data
     );
 }
 
+
 function sendPhoto(
     int|string $chatId,
     string $photo,
-    string $caption = '',
+    string $caption,
     ?array $keyboard = null
 ): array {
 
@@ -240,87 +143,163 @@ function sendPhoto(
         'parse_mode' => 'HTML'
     ];
 
-    if ($keyboard !== null) {
-        $data['reply_markup'] = json_encode([
-            'inline_keyboard' => $keyboard
-        ]);
+    if ($keyboard) {
+        $data['reply_markup'] =
+            json_encode([
+                'inline_keyboard' => $keyboard
+            ]);
     }
 
-    return telegram(
+    return tg(
         'sendPhoto',
         $data
     );
 }
 
+
 function sendAudio(
     int|string $chatId,
     string $audio,
-    string $title = '',
-    string $artist = '',
-    int $duration = 0,
-    string $thumbnail = ''
+    string $title,
+    string $artist,
+    int $duration = 0
 ): array {
 
     $data = [
         'chat_id' => $chatId,
         'audio' => $audio,
         'title' => $title,
-        'performer' => $artist,
-        'parse_mode' => 'HTML'
+        'performer' => $artist
     ];
 
     if ($duration > 0) {
         $data['duration'] = $duration;
     }
 
-    if ($thumbnail !== '') {
-        $data['thumbnail'] = $thumbnail;
-    }
-
-    return telegram(
+    return tg(
         'sendAudio',
         $data
     );
 }
 
-function answerCallback(
-    string $callbackId,
-    string $text = '',
-    bool $alert = false
+
+// ============================================================================
+// USER ACCESS
+// ============================================================================
+
+function isAdmin(
+    int|string $id
+): bool {
+
+    return (string)$id ===
+           (string)ADMIN_ID;
+}
+
+
+function hasAccess(
+    int|string $id
+): bool {
+
+    if (isAdmin($id)) {
+        return true;
+    }
+
+    $users =
+        readData('users');
+
+    return
+        !empty(
+            $users[(string)$id]['paid']
+        );
+}
+
+
+function saveUser(
+    array $user
 ): void {
 
-    telegram(
-        'answerCallbackQuery',
-        [
-            'callback_query_id' => $callbackId,
-            'text' => $text,
-            'show_alert' => $alert
-        ]
+    $users =
+        readData('users');
+
+    $id =
+        (string)$user['id'];
+
+    if (!isset($users[$id])) {
+
+        $users[$id] = [
+            'id' => $user['id'],
+            'username' =>
+                $user['username'] ?? '',
+            'first_name' =>
+                $user['first_name'] ?? '',
+            'paid' => false,
+            'created_at' => time()
+        ];
+    }
+
+    $users[$id]['last_seen'] =
+        time();
+
+    writeData(
+        'users',
+        $users
     );
 }
 
 
-// ======================================================
-// TELEGRAM STARS PAYMENT
-// ======================================================
+function grantAccess(
+    int|string $id
+): void {
 
-function sendStarsInvoice(
+    $users =
+        readData('users');
+
+    $key =
+        (string)$id;
+
+    if (!isset($users[$key])) {
+        $users[$key] = [
+            'id' => $id
+        ];
+    }
+
+    $users[$key]['paid'] =
+        true;
+
+    $users[$key]['paid_at'] =
+        time();
+
+    writeData(
+        'users',
+        $users
+    );
+}
+
+
+// ============================================================================
+// TELEGRAM STARS
+// ============================================================================
+
+function sendPremiumInvoice(
     int|string $chatId
 ): void {
 
-    telegram(
+    tg(
         'sendInvoice',
         [
             'chat_id' => $chatId,
 
             'title' =>
-                'Music Bot Premium Access',
+                'Music Bot Premium',
 
             'description' =>
-                'Unlock music search, playback and MP3 features.',
+                'Unlock music search, playback and MP3 downloads.',
 
             'payload' =>
-                'music_access_' . $chatId . '_' . time(),
+                'premium_' .
+                $chatId .
+                '_' .
+                time(),
 
             'provider_token' => '',
 
@@ -328,22 +307,22 @@ function sendStarsInvoice(
 
             'prices' => json_encode([
                 [
-                    'label' => 'Premium Access',
-                    'amount' => REQUIRED_STARS
+                    'label' =>
+                        'Premium Access',
+                    'amount' =>
+                        REQUIRED_STARS
                 ]
-            ]),
-
-            'start_parameter' =>
-                'music-premium'
+            ])
         ]
     );
 }
+
 
 function handlePreCheckout(
     array $query
 ): void {
 
-    telegram(
+    tg(
         'answerPreCheckoutQuery',
         [
             'pre_checkout_query_id' =>
@@ -354,39 +333,32 @@ function handlePreCheckout(
     );
 }
 
-function handleSuccessfulPayment(
+
+function handlePayment(
     array $message
 ): void {
 
     $chatId =
         $message['chat']['id'];
 
-    $payment =
-        $message['successful_payment'];
-
-    $chargeId =
-        $payment['telegram_payment_charge_id']
-        ?? '';
-
-    grantAccess($chatId);
+    grantAccess(
+        $chatId
+    );
 
     sendMessage(
         $chatId,
-        "✅ <b>Payment Successful</b>\n\n" .
-        "⭐ Stars received: <b>" .
-        REQUIRED_STARS .
-        "</b>\n\n" .
-        "🎵 Your Music Bot access is now unlocked.\n\n" .
-        "Send a song name to search."
+        "✅ <b>Payment successful!</b>\n\n" .
+        "⭐ Premium unlocked.\n\n" .
+        "Now send any song name."
     );
 }
 
 
-// ======================================================
+// ============================================================================
 // MUSIC API
-// ======================================================
+// ============================================================================
 
-function apiRequest(
+function musicApi(
     string $query
 ): array {
 
@@ -408,105 +380,99 @@ function apiRequest(
         ]
     ]);
 
-    $response = curl_exec($ch);
-
-    $httpCode =
-        curl_getinfo(
-            $ch,
-            CURLINFO_HTTP_CODE
-        );
+    $response =
+        curl_exec($ch);
 
     curl_close($ch);
 
-    if (
-        !$response ||
-        $httpCode < 200 ||
-        $httpCode >= 300
-    ) {
+    if (!$response) {
         return [];
     }
 
-    $json = json_decode(
-        $response,
-        true
-    );
+    $data =
+        json_decode(
+            $response,
+            true
+        );
 
-    return is_array($json)
-        ? $json
+    return is_array($data)
+        ? $data
         : [];
 }
 
 
-// ======================================================
-// NORMALIZE API RESULT
-// ======================================================
+// ============================================================================
+// SONG NORMALIZATION
+// ============================================================================
 
 function normalizeSong(
-    array $song
+    array $s
 ): array {
 
-    $title =
-        $song['title']
-        ?? $song['name']
-        ?? $song['song']
-        ?? $song['track']
-        ?? 'Unknown Song';
-
-    $artist =
-        $song['artist']
-        ?? $song['author']
-        ?? $song['performer']
-        ?? $song['artists']
-        ?? 'Unknown Artist';
-
-    $thumbnail =
-        $song['thumbnail']
-        ?? $song['thumb']
-        ?? $song['image']
-        ?? $song['cover']
-        ?? $song['artwork']
-        ?? '';
-
-    $audio =
-        $song['audio_url']
-        ?? $song['audio']
-        ?? $song['download_url']
-        ?? $song['download']
-        ?? $song['url']
-        ?? '';
-
-    $duration =
-        $song['duration']
-        ?? $song['length']
-        ?? 0;
-
     return [
-        'title' => (string)$title,
-        'artist' => is_array($artist)
-            ? implode(', ', $artist)
-            : (string)$artist,
-        'thumbnail' => (string)$thumbnail,
-        'audio' => (string)$audio,
-        'duration' => parseDuration($duration)
+
+        'title' =>
+            (string)(
+                $s['title']
+                ?? $s['name']
+                ?? $s['song']
+                ?? 'Unknown Song'
+            ),
+
+        'artist' =>
+            (string)(
+                $s['artist']
+                ?? $s['author']
+                ?? $s['performer']
+                ?? 'Unknown Artist'
+            ),
+
+        'thumbnail' =>
+            (string)(
+                $s['thumbnail']
+                ?? $s['image']
+                ?? $s['thumb']
+                ?? $s['cover']
+                ?? ''
+            ),
+
+        'audio' =>
+            (string)(
+                $s['audio_url']
+                ?? $s['audio']
+                ?? $s['download_url']
+                ?? $s['download']
+                ?? $s['url']
+                ?? ''
+            ),
+
+        'duration' =>
+            durationSeconds(
+                $s['duration']
+                ?? $s['length']
+                ?? 0
+            )
     ];
 }
 
-function parseDuration(
-    mixed $duration
+
+function durationSeconds(
+    mixed $value
 ): int {
 
-    if (is_numeric($duration)) {
-        return (int)$duration;
+    if (is_numeric($value)) {
+        return (int)$value;
     }
 
     if (
-        is_string($duration) &&
+        is_string($value) &&
         preg_match(
             '/^(\d+):(\d{1,2})$/',
-            $duration,
+            $value,
             $m
         )
     ) {
+
         return
             ((int)$m[1] * 60) +
             (int)$m[2];
@@ -516,76 +482,72 @@ function parseDuration(
 }
 
 
-// ======================================================
-// EXTRACT RESULTS
-// ======================================================
+// ============================================================================
+// RESULTS EXTRACTION
+// ============================================================================
 
-function extractResults(
-    array $response
+function resultsFromApi(
+    array $data
 ): array {
 
-    $possible = [
-        $response['results'] ?? null,
-        $response['data'] ?? null,
-        $response['songs'] ?? null,
-        $response['items'] ?? null
-    ];
+    foreach (
+        ['results', 'data', 'songs', 'items']
+        as $key
+    ) {
 
-    foreach ($possible as $list) {
-
-        if (is_array($list)) {
-            return $list;
+        if (
+            isset($data[$key]) &&
+            is_array($data[$key])
+        ) {
+            return $data[$key];
         }
     }
 
-    if (array_is_list($response)) {
-        return $response;
-    }
-
-    return [];
+    return array_is_list($data)
+        ? $data
+        : [];
 }
 
 
-// ======================================================
-// SAVE SEARCH RESULTS
-// ======================================================
+// ============================================================================
+// SEARCH CACHE
+// ============================================================================
 
-function saveSearch(
-    int|string $userId,
+function saveResults(
+    int|string $chatId,
     array $songs
 ): void {
 
-    $searches =
-        loadJson(searchesFile());
+    $cache =
+        readData('results');
 
-    $searches[(string)$userId] =
+    $cache[(string)$chatId] =
         $songs;
 
-    saveJson(
-        searchesFile(),
-        $searches
+    writeData(
+        'results',
+        $cache
     );
 }
 
-function getSearchSong(
-    int|string $userId,
+
+function getSong(
+    int|string $chatId,
     int $index
 ): ?array {
 
-    $searches =
-        loadJson(searchesFile());
+    $cache =
+        readData('results');
 
-    $songs =
-        $searches[(string)$userId]
-        ?? [];
-
-    return $songs[$index] ?? null;
+    return
+        $cache[(string)$chatId][$index]
+        ?? null;
 }
 
 
-// ======================================================
+// ============================================================================
 // SEARCH
-// ======================================================
+// ============================================================================
 
 function searchMusic(
     int|string $chatId,
@@ -599,18 +561,17 @@ function searchMusic(
         "</b>..."
     );
 
-    $response =
-        apiRequest($query);
+    $api =
+        musicApi($query);
 
-    $rawResults =
-        extractResults($response);
+    $raw =
+        resultsFromApi($api);
 
-    if (!$rawResults) {
+    if (!$raw) {
 
         sendMessage(
             $chatId,
-            "❌ <b>No songs found.</b>\n\n" .
-            "Try another song or artist."
+            "❌ No results found."
         );
 
         return;
@@ -618,14 +579,14 @@ function searchMusic(
 
     $songs = [];
 
-    foreach ($rawResults as $rawSong) {
+    foreach ($raw as $item) {
 
-        if (!is_array($rawSong)) {
+        if (!is_array($item)) {
             continue;
         }
 
         $song =
-            normalizeSong($rawSong);
+            normalizeSong($item);
 
         $songs[] =
             $song;
@@ -635,68 +596,87 @@ function searchMusic(
         }
     }
 
-    if (!$songs) {
-        sendMessage(
-            $chatId,
-            "❌ API returned no usable songs."
-        );
-
-        return;
-    }
-
-    saveSearch(
+    saveResults(
         $chatId,
         $songs
     );
 
-    foreach ($songs as $i => $song) {
-
-        $keyboard = [
-            [
-                [
-                    'text' => '▶️ Play',
-                    'callback_data' =>
-                        'play:' . $i
-                ],
-                [
-                    'text' => '📥 MP3',
-                    'callback_data' =>
-                        'mp3:' . $i
-                ]
-            ],
-            [
-                [
-                    'text' => '❤️ Save',
-                    'callback_data' =>
-                        'fav:' . $i
-                ],
-                [
-                    'text' => '➕ Queue',
-                    'callback_data' =>
-                        'queue:' . $i
-                ]
-            ]
-        ];
+    foreach (
+        $songs as $i => $song
+    ) {
 
         $caption =
             "🎵 <b>" .
-            htmlspecialchars($song['title']) .
+            htmlspecialchars(
+                $song['title']
+            ) .
             "</b>\n\n" .
 
-            "👤 <b>Artist:</b> " .
-            htmlspecialchars($song['artist']);
+            "👤 " .
+            htmlspecialchars(
+                $song['artist']
+            );
 
         if ($song['duration'] > 0) {
 
             $caption .=
-                "\n⏱️ <b>Duration:</b> " .
+                "\n⏱️ " .
                 gmdate(
                     'i:s',
                     $song['duration']
                 );
         }
 
-        if ($song['thumbnail'] !== '') {
+        /*
+         * Android companion APK can use
+         * this audio URL for mini-player
+         * streaming.
+         */
+
+        $playData =
+            'play:' . $i;
+
+        $mp3Data =
+            'mp3:' . $i;
+
+        $keyboard = [
+
+            [
+                [
+                    'text' =>
+                        '▶️ Play',
+                    'callback_data' =>
+                        $playData
+                ],
+
+                [
+                    'text' =>
+                        '📥 MP3',
+                    'callback_data' =>
+                        $mp3Data
+                ]
+            ],
+
+            [
+                [
+                    'text' =>
+                        '❤️ Save',
+                    'callback_data' =>
+                        'fav:' . $i
+                ],
+
+                [
+                    'text' =>
+                        '➕ Queue',
+                    'callback_data' =>
+                        'queue:' . $i
+                ]
+            ]
+        ];
+
+        if (
+            $song['thumbnail'] !== ''
+        ) {
 
             sendPhoto(
                 $chatId,
@@ -717,9 +697,9 @@ function searchMusic(
 }
 
 
-// ======================================================
-// PLAY / MP3
-// ======================================================
+// ============================================================================
+// PLAY
+// ============================================================================
 
 function playSong(
     int|string $chatId,
@@ -727,7 +707,7 @@ function playSong(
 ): void {
 
     $song =
-        getSearchSong(
+        getSong(
             $chatId,
             $index
         );
@@ -736,28 +716,27 @@ function playSong(
 
         sendMessage(
             $chatId,
-            "❌ Search result expired. Search again."
+            "❌ Search result expired."
         );
 
         return;
     }
 
-    if ($song['audio'] === '') {
+    if (
+        empty($song['audio'])
+    ) {
 
         sendMessage(
             $chatId,
-            "❌ This API result does not contain " .
-            "a playable audio URL."
+            "❌ Audio URL is missing from API."
         );
 
         return;
     }
 
-    sendMessage(
-        $chatId,
-        "⏳ <b>Loading:</b> " .
-        htmlspecialchars($song['title'])
-    );
+    /*
+     * Telegram audio playback.
+     */
 
     $result =
         sendAudio(
@@ -765,252 +744,50 @@ function playSong(
             $song['audio'],
             $song['title'],
             $song['artist'],
-            $song['duration'],
-            $song['thumbnail']
+            $song['duration']
         );
 
-    if (empty($result['ok'])) {
+    if (
+        empty($result['ok'])
+    ) {
 
         sendMessage(
             $chatId,
-            "❌ Telegram could not fetch the audio.\n\n" .
-            "Check that the API audio URL is publicly " .
-            "accessible and returns MP3/M4A."
+            "❌ Telegram could not fetch this audio."
         );
     }
 }
+
+
+// ============================================================================
+// MP3
+// ============================================================================
 
 function downloadMp3(
     int|string $chatId,
     int $index
 ): void {
 
-    $song =
-        getSearchSong(
-            $chatId,
-            $index
-        );
+    /*
+     * Same audio URL can be delivered
+     * as Telegram Audio.
+     *
+     * Filename/title is derived from song
+     * metadata by Telegram.
+     */
 
-    if (!$song) {
-
-        sendMessage(
-            $chatId,
-            "❌ Search result expired. Search again."
-        );
-
-        return;
-    }
-
-    if ($song['audio'] === '') {
-
-        sendMessage(
-            $chatId,
-            "❌ MP3 URL unavailable for this result."
-        );
-
-        return;
-    }
-
-    sendMessage(
+    playSong(
         $chatId,
-        "📥 <b>Preparing MP3...</b>\n\n" .
-        htmlspecialchars($song['title'])
-    );
-
-    $result =
-        sendAudio(
-            $chatId,
-            $song['audio'],
-            $song['title'],
-            $song['artist'],
-            $song['duration'],
-            $song['thumbnail']
-        );
-
-    if (empty($result['ok'])) {
-
-        sendMessage(
-            $chatId,
-            "❌ MP3 could not be delivered."
-        );
-    }
-}
-
-
-// ======================================================
-// FAVORITES
-// ======================================================
-
-function addFavorite(
-    int|string $chatId,
-    int $index
-): void {
-
-    $song =
-        getSearchSong(
-            $chatId,
-            $index
-        );
-
-    if (!$song) {
-        sendMessage(
-            $chatId,
-            "❌ Search result expired."
-        );
-        return;
-    }
-
-    $favorites =
-        loadJson(favoritesFile());
-
-    $id =
-        (string)$chatId;
-
-    if (!isset($favorites[$id])) {
-        $favorites[$id] = [];
-    }
-
-    $favorites[$id][] =
-        $song;
-
-    saveJson(
-        favoritesFile(),
-        $favorites
-    );
-
-    sendMessage(
-        $chatId,
-        "❤️ <b>Added to Favorites</b>\n\n" .
-        htmlspecialchars($song['title'])
+        $index
     );
 }
 
 
-// ======================================================
-// QUEUE
-// ======================================================
+// ============================================================================
+// CALLBACKS
+// ============================================================================
 
-function addQueue(
-    int|string $chatId,
-    int $index
-): void {
-
-    $song =
-        getSearchSong(
-            $chatId,
-            $index
-        );
-
-    if (!$song) {
-        sendMessage(
-            $chatId,
-            "❌ Search result expired."
-        );
-        return;
-    }
-
-    $queues =
-        loadJson(queuesFile());
-
-    $id =
-        (string)$chatId;
-
-    if (!isset($queues[$id])) {
-        $queues[$id] = [];
-    }
-
-    $queues[$id][] =
-        $song;
-
-    saveJson(
-        queuesFile(),
-        $queues
-    );
-
-    sendMessage(
-        $chatId,
-        "➕ <b>Added to Queue</b>\n\n" .
-        htmlspecialchars($song['title'])
-    );
-}
-
-
-// ======================================================
-// PREMIUM GATE
-// ======================================================
-
-function requirePremium(
-    int|string $chatId
-): bool {
-
-    if (userHasAccess($chatId)) {
-        return true;
-    }
-
-    $keyboard = [
-        [
-            [
-                'text' =>
-                    '⭐ Unlock for 5 Stars',
-                'callback_data' =>
-                    'pay'
-            ]
-        ]
-    ];
-
-    sendPhoto(
-        $chatId,
-        MEME_IMAGE,
-        "😂 <b>Ruko zara...</b>\n\n" .
-        "Music search use karne ke liye " .
-        "<b>5 Telegram Stars</b> required hain.\n\n" .
-        "⭐ Pay inside Telegram and unlock access.",
-        $keyboard
-    );
-
-    return false;
-}
-
-
-// ======================================================
-// START
-// ======================================================
-
-function handleStart(
-    array $message
-): void {
-
-    $chatId =
-        $message['chat']['id'];
-
-    $user =
-        $message['from']
-        ?? [];
-
-    saveUser($user);
-
-    if (!userHasAccess($chatId)) {
-
-        requirePremium($chatId);
-
-        return;
-    }
-
-    sendMessage(
-        $chatId,
-        "🎵 <b>Music Bot</b>\n\n" .
-        "Send any song or artist name.\n\n" .
-        "Example:\n" .
-        "<code>Chandni Arijit Singh</code>"
-    );
-}
-
-
-// ======================================================
-// CALLBACK HANDLER
-// ======================================================
-
-function handleCallback(
+function callbackHandler(
     array $callback
 ): void {
 
@@ -1022,28 +799,41 @@ function handleCallback(
         $callback['data']
         ?? '';
 
-    answerCallback(
-        $callback['id']
+    tg(
+        'answerCallbackQuery',
+        [
+            'callback_query_id' =>
+                $callback['id']
+        ]
     );
 
     if ($data === 'pay') {
 
-        sendStarsInvoice(
+        sendPremiumInvoice(
             $chatId
         );
 
         return;
     }
 
-    if (!requirePremium($chatId)) {
+    if (
+        !hasAccess($chatId)
+    ) {
+
+        sendPremiumInvoice(
+            $chatId
+        );
+
         return;
     }
 
-    if (preg_match(
-        '/^(play|mp3|fav|queue):(\d+)$/',
-        $data,
-        $m
-    )) {
+    if (
+        preg_match(
+            '/^(play|mp3):(\d+)$/',
+            $data,
+            $m
+        )
+    ) {
 
         $action =
             $m[1];
@@ -1051,47 +841,29 @@ function handleCallback(
         $index =
             (int)$m[2];
 
-        switch ($action) {
+        if ($action === 'play') {
 
-            case 'play':
-                playSong(
-                    $chatId,
-                    $index
-                );
-                break;
+            playSong(
+                $chatId,
+                $index
+            );
 
-            case 'mp3':
-                downloadMp3(
-                    $chatId,
-                    $index
-                );
-                break;
+        } else {
 
-            case 'fav':
-                addFavorite(
-                    $chatId,
-                    $index
-                );
-                break;
-
-            case 'queue':
-                addQueue(
-                    $chatId,
-                    $index
-                );
-                break;
+            downloadMp3(
+                $chatId,
+                $index
+            );
         }
-
-        return;
     }
 }
 
 
-// ======================================================
+// ============================================================================
 // MESSAGE HANDLER
-// ======================================================
+// ============================================================================
 
-function handleMessage(
+function messageHandler(
     array $message
 ): void {
 
@@ -1102,9 +874,9 @@ function handleMessage(
         $message['from']
         ?? [];
 
-    saveUser($user);
-
-    // Successful Telegram Stars payment
+    saveUser(
+        $user
+    );
 
     if (
         isset(
@@ -1112,14 +884,12 @@ function handleMessage(
         )
     ) {
 
-        handleSuccessfulPayment(
+        handlePayment(
             $message
         );
 
         return;
     }
-
-    // Commands / text
 
     $text =
         trim(
@@ -1133,28 +903,57 @@ function handleMessage(
 
     if ($text === '/start') {
 
-        handleStart(
-            $message
-        );
+        if (
+            !hasAccess($chatId)
+        ) {
+
+            sendPhoto(
+                $chatId,
+
+                'https://placehold.co/800x500/jpg?text=😂+Meme',
+
+                "😂 <b>Wait...</b>\n\n" .
+                "Music search unlock karne ke liye " .
+                "<b>5 Telegram Stars</b> required hain.",
+
+                [
+                    [
+                        [
+                            'text' =>
+                                '⭐ Pay 5 Stars',
+                            'callback_data' =>
+                                'pay'
+                        ]
+                    ]
+                ]
+            );
+
+        } else {
+
+            sendMessage(
+                $chatId,
+                "🎵 <b>Music Bot</b>\n\n" .
+                "Song name bhejo."
+            );
+        }
 
         return;
     }
 
-    if ($text === '/help') {
-
-        if (!requirePremium($chatId)) {
-            return;
-        }
+    if (
+        $text === '/help'
+    ) {
 
         sendMessage(
             $chatId,
+
             "🎵 <b>Music Bot</b>\n\n" .
-            "Send a song name to search.\n\n" .
-            "Features:\n" .
+            "🔎 Search\n" .
             "▶️ Play\n" .
             "📥 MP3\n" .
-            "❤️ Favorites\n" .
-            "➕ Queue"
+            "🎨 Thumbnail\n" .
+            "👤 Artist\n" .
+            "⏭️ Queue"
         );
 
         return;
@@ -1166,24 +965,26 @@ function handleMessage(
     ) {
 
         $users =
-            loadJson(usersFile());
+            readData('users');
 
         sendMessage(
             $chatId,
-            "👑 <b>Admin Panel</b>\n\n" .
-            "Users: <b>" .
-            count($users) .
-            "</b>"
+            "👑 <b>Admin</b>\n\n" .
+            "Users: " .
+            count($users)
         );
 
         return;
     }
 
-    // Search
-
     if (
-        !requirePremium($chatId)
+        !hasAccess($chatId)
     ) {
+
+        sendPremiumInvoice(
+            $chatId
+        );
+
         return;
     }
 
@@ -1194,11 +995,11 @@ function handleMessage(
 }
 
 
-// ======================================================
-// UPDATE ROUTER
-// ======================================================
+// ============================================================================
+// UPDATE
+// ============================================================================
 
-function handleUpdate(
+function processUpdate(
     array $update
 ): void {
 
@@ -1221,7 +1022,7 @@ function handleUpdate(
         )
     ) {
 
-        handleMessage(
+        messageHandler(
             $update['message']
         );
 
@@ -1234,25 +1035,23 @@ function handleUpdate(
         )
     ) {
 
-        handleCallback(
+        callbackHandler(
             $update['callback_query']
         );
-
-        return;
     }
 }
 
 
-// ======================================================
-// WEBHOOK ENTRY
-// ======================================================
+// ============================================================================
+// WEBHOOK
+// ============================================================================
 
 $input =
     file_get_contents(
         'php://input'
     );
 
-if ($input !== '') {
+if ($input) {
 
     $update =
         json_decode(
@@ -1262,21 +1061,21 @@ if ($input !== '') {
 
     if (is_array($update)) {
 
-        handleUpdate(
+        processUpdate(
             $update
         );
     }
 }
 
 
-// ======================================================
+// ============================================================================
 // HEALTH CHECK
-// ======================================================
+// ============================================================================
 
 if (
     $_SERVER['REQUEST_METHOD'] === 'GET'
 ) {
 
     echo
-        '🎵 Telegram Music Bot is running.';
+        'Telegram Music Bot Online';
 }
