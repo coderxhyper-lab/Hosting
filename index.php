@@ -74,8 +74,8 @@ declare(strict_types=1);
  * 4) Put any random 32+ character value in CRON_SECRET.
  * 5) Save/upload this file and open ?health=1 to verify config.
  *
- * OPTION B - Railway Variables: BOT_TOKEN, TURNSTILE_SECRET,
- * WEBAPP_URL and CRON_SECRET override these local values.
+ * This build is configured for CODE-ONLY deployment.
+ * No Railway Variables are required for the app configuration.
  * NEVER share your real Bot Token or Cloudflare Secret Key.
  */
 
@@ -116,7 +116,7 @@ const API_CONNECT_TIMEOUT = 8;
    supplied through environment variables on the server.
    ============================================================ */
 const TURNSTILE_SITE_KEY = '0x4AAAAAAFE73ZYt9-s7MVq8';
-const TURNSTILE_SECRET = '0x4AAAAAAFE75l1u_wLPxH2Z'; // <-- PUT Cloudflare Secret Key here OR use Railway TURNSTILE_SECRET.
+const TURNSTILE_SECRET = '0x4AAAAAAFE75l1u_wLPxH2Z'; // <-- PUT your Cloudflare Turnstile SECRET key here.
 const TELEGRAM_WEBHOOK_SECRET = ''; // Optional: set Railway TELEGRAM_WEBHOOK_SECRET.
 const CAPTCHA_TTL = 86400;
 const PLAYER_TTL = 86400;
@@ -132,7 +132,7 @@ const RADHE_HOURS = 6;
 const REMINDER_INTERVAL = 1800;
 const REMINDER_MIN_IDLE = 1800;
 const SUNDAY_REWARD_HOURS = 24;
-const CRON_SECRET = 'PASTE_YOUR_CRON_SECRET_HERE'; // <-- PUT a random 32+ character secret here OR use Railway CRON_SECRET.
+const CRON_SECRET = 'PASTE_YOUR_RANDOM_32_CHAR_CRON_SECRET_HERE'; // <-- PUT any random 32+ character value here.
 const POLICY_VERSION = '1.0';
 
 
@@ -142,17 +142,10 @@ const POLICY_VERSION = '1.0';
 
 function configBotToken(): string
 {
-    $env = getenv('BOT_TOKEN');
-
-    if ($env !== false && trim($env) !== '') {
-        return trim($env);
-    }
-
     $local = trim(BOT_TOKEN);
-    if ($local === 'PASTE_YOUR_BOT_TOKEN_HERE') {
+    if ($local === '' || $local === 'PASTE_YOUR_BOT_TOKEN_HERE') {
         return '';
     }
-
     return $local;
 }
 
@@ -280,23 +273,17 @@ function jsonReply(array $data): void
 /* ============================================================
    SECURITY / CONFIG HELPERS
    ============================================================ */
-function envOrConst(string $envName, string $constantValue): string
+function directConfigValue(string $value): string
 {
-    $v = getenv($envName);
-    if ($v !== false && trim($v) !== '') {
-        return trim($v);
-    }
-
-    $value = trim($constantValue);
-    if (str_starts_with($value, 'PASTE_YOUR_') && str_ends_with($value, '_HERE')) {
+    $value = trim($value);
+    if ($value === '' || (str_starts_with($value, 'PASTE_YOUR_') && str_ends_with($value, '_HERE'))) {
         return '';
     }
-
     return $value;
 }
-function turnstileSiteKey(): string { return envOrConst('TURNSTILE_SITE_KEY', TURNSTILE_SITE_KEY); }
-function turnstileSecret(): string { return envOrConst('TURNSTILE_SECRET', TURNSTILE_SECRET); }
-function telegramWebhookSecret(): string { return envOrConst('TELEGRAM_WEBHOOK_SECRET', TELEGRAM_WEBHOOK_SECRET); }
+function turnstileSiteKey(): string { return directConfigValue(TURNSTILE_SITE_KEY); }
+function turnstileSecret(): string { return directConfigValue(TURNSTILE_SECRET); }
+function telegramWebhookSecret(): string { return directConfigValue(TELEGRAM_WEBHOOK_SECRET); }
 function captchaEnabled(): bool { return turnstileSiteKey() !== '' && turnstileSecret() !== ''; }
 
 function clientIp(): string
@@ -776,7 +763,7 @@ function sendActivityReminders(): int
 
 function runCronJob(string $key): void
 {
-    $expected=envOrConst('CRON_SECRET',CRON_SECRET);
+    $expected=directConfigValue(CRON_SECRET);
     if ($expected==='' || !hash_equals($expected,$key)) { http_response_code(403); echo 'Forbidden'; return; }
     $a=grantSundayRewards(); $b=sendActivityReminders();
     header('Content-Type:text/plain; charset=UTF-8');
@@ -5247,7 +5234,7 @@ function healthPage(): void
         "WebApp: " . configWebAppUrl() . "\n" .
         "Turnstile site key: " . (turnstileSiteKey() !== '' ? 'configured' : 'MISSING') . "\n" .
         "Turnstile secret: " . (turnstileSecret() !== '' ? 'configured' : 'MISSING') . "\n" .
-        "Cron secret: " . (envOrConst('CRON_SECRET', CRON_SECRET) !== '' ? 'configured' : 'MISSING') . "\n" .
+        "Cron secret: " . (directConfigValue(CRON_SECRET) !== '' ? 'configured' : 'MISSING') . "\n" .
         "Time: " . date('c') . "\n";
 }
 
