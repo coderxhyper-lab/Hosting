@@ -101,9 +101,9 @@ const API_CONNECT_TIMEOUT = 8;
    Existing configuration is preserved. Optional secrets may be
    supplied through environment variables on the server.
    ============================================================ */
-const TURNSTILE_SITE_KEY = '0x4AAAAAAFE75l1u_wLPxH2Z';
-const TURNSTILE_SECRET = '0x4AAAAAAFE75jNstXx-wp2k32TA9gNb4eI';
-const TELEGRAM_WEBHOOK_SECRET = 'hosting-production-aacd.up.railway.app';
+const TURNSTILE_SITE_KEY = '0x4AAAAAAFE73ZYt9-s7MVq8';
+const TURNSTILE_SECRET = '0x4AAAAAAFE75l1u_wLPxH2Z';
+const TELEGRAM_WEBHOOK_SECRET = '';
 const CAPTCHA_TTL = 86400;
 const PLAYER_TTL = 86400;
 const SEARCH_TTL = 1800;
