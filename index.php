@@ -3,7 +3,7 @@
  * ============================================================
  * MAYAMUSIC - COMPLETE SINGLE FILE TELEGRAM MUSIC BOT V2
  * PHP 8.1+
- * Security hardening + Turnstile + Manual UPI/UTR + smart auto-next
+ * Security hardening + Manual UPI/UTR + smart auto-next
  * ============================================================
  *
  * FEATURES
@@ -69,10 +69,9 @@ declare(strict_types=1);
  * QUICK SETUP (OPTION A - SIMPLE PHONE/FILE EDIT)
  * ------------------------------------------------------------
  * 1) Put your BotFather token in BOT_TOKEN below.
- * 2) Keep TURNSTILE_SITE_KEY as the Cloudflare Site Key.
- * 3) Put your Cloudflare Secret Key in TURNSTILE_SECRET.
- * 4) Put any random 32+ character value in CRON_SECRET.
- * 5) Save/upload this file and open ?health=1 to verify config.
+ * 2) Put any random 32+ character value in CRON_SECRET.
+ * 3) Optional: set TELEGRAM_WEBHOOK_SECRET to protect the webhook.
+ * 4) Save/upload this file and open ?health=1 to verify config.
  *
  * This build is configured for CODE-ONLY deployment.
  * No Railway Variables are required for the app configuration.
@@ -115,10 +114,7 @@ const API_CONNECT_TIMEOUT = 8;
    Existing configuration is preserved. Optional secrets may be
    supplied through environment variables on the server.
    ============================================================ */
-const TURNSTILE_SITE_KEY = '0x4AAAAAAFE73ZYt9-s7MVq8';
-const TURNSTILE_SECRET = '0x4AAAAAAFE75l1u_wLPxH2Z'; // <-- PUT your Cloudflare Turnstile SECRET key here.
 const TELEGRAM_WEBHOOK_SECRET = ''; // Optional: set Railway TELEGRAM_WEBHOOK_SECRET.
-const CAPTCHA_TTL = 86400;
 const PLAYER_TTL = 86400;
 const SEARCH_TTL = 1800;
 const RATE_WINDOW = 60;
@@ -281,169 +277,11 @@ function directConfigValue(string $value): string
     }
     return $value;
 }
-function turnstileSiteKey(): string { return directConfigValue(TURNSTILE_SITE_KEY); }
-function turnstileSecret(): string { return directConfigValue(TURNSTILE_SECRET); }
-function telegramWebhookSecret(): string { return directConfigValue(TELEGRAM_WEBHOOK_SECRET); }
-function captchaEnabled(): bool { return turnstileSiteKey() !== '' && turnstileSecret() !== ''; }
-
-function clientIp(): string
-{
-    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-    return is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP) ? $ip : 'unknown';
-}
-
-function auditLog(string $event, int $uid = 0, array $meta = []): void
-{
-    $logs = readJson('audit');
-    $logs[] = ['time'=>now(),'event'=>$event,'user_id'=>$uid,'ip'=>clientIp(),'meta'=>$meta];
-    if (count($logs) > 5000) $logs = array_slice($logs, -5000);
-    writeJson('audit', array_values($logs));
-}
-
-function rateLimit(string $bucket, int $limit, int $window, int $uid = 0): bool
-{
-    $key = hash('sha256', $bucket.'|'.$uid.'|'.clientIp());
-    $data = readJson('ratelimits');
-    $t = now();
-    $row = $data[$key] ?? ['start'=>$t,'count'=>0];
-    if ($t - (int)($row['start'] ?? $t) >= $window) $row = ['start'=>$t,'count'=>0];
-    $row['count'] = (int)$row['count'] + 1;
-    $data[$key] = $row;
-    foreach ($data as $k=>$v) {
-        if (count($data) > 5000 && $t-(int)($v['start']??$t)>$window*3) unset($data[$k]);
-    }
-    writeJson('ratelimits',$data);
-    if ($row['count'] > $limit) {
-        auditLog('rate_limited',$uid,['bucket'=>$bucket]);
-        return false;
-    }
-    return true;
-}
-
-function validateTelegramInitData(string $initData): ?array
-{
-    if ($initData === '' || strlen($initData) > 8192) return null;
-    parse_str($initData, $data);
-    if (!is_array($data) || empty($data['hash']) || empty($data['auth_date'])) return null;
-    $hash=(string)$data['hash'];
-    unset($data['hash']);
-    ksort($data);
-    $pairs=[];
-    foreach($data as $k=>$v) $pairs[]=$k.'='.$v;
-    $check=implode("\n",$pairs);
-    $secret=hash_hmac('sha256',configBotToken(),'WebAppData',true);
-    $calc=hash_hmac('sha256',$check,$secret);
-    if (!hash_equals($calc,$hash)) return null;
-    if (abs(now()-(int)$data['auth_date'])>86400) return null;
-    $user=[];
-    if (!empty($data['user'])) {
-        $user=json_decode((string)$data['user'],true);
-        if (!is_array($user)) $user=[];
-    }
-    $uid=(int)($user['id']??0);
-    return $uid>0 ? ['data'=>$data,'user'=>$user,'user_id'=>$uid] : null;
-}
-
-function validateTurnstileToken(string $token): bool
-{
-    if ($token === '' || strlen($token) > 2048) {
-        auditLog('captcha_invalid_token');
-        return false;
-    }
-
-    $secret = turnstileSecret();
-    if ($secret === '') {
-        auditLog('captcha_secret_missing');
-        return false;
-    }
-
-    $payload = http_build_query([
-        'secret' => $secret,
-        'response' => $token,
-        // Do not force a client IP through Telegram WebView/proxy layers.
-    ]);
-
-    $body = false;
-
-    $ch = curl_init('https://challenges.cloudflare.com/turnstile/v0/siteverify');
-    if ($ch !== false) {
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/x-www-form-urlencoded',
-                'Accept: application/json'
-            ],
-            CURLOPT_CONNECTTIMEOUT => 8,
-            CURLOPT_TIMEOUT => 15,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_USERAGENT => 'MAYAMUSIC/4.0'
-        ]);
-        $body = curl_exec($ch);
-        $curlError = curl_error($ch);
-        curl_close($ch);
-        if ($body === false) {
-            auditLog('captcha_http_error', 0, ['error' => substr($curlError, 0, 160)]);
-        }
-    }
-
-    if ($body === false || !is_string($body) || trim($body) === '') {
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => "Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n",
-                'content' => $payload,
-                'timeout' => 15,
-                'ignore_errors' => true
-            ]
-        ]);
-        $fallback = @file_get_contents(
-            'https://challenges.cloudflare.com/turnstile/v0/siteverify',
-            false,
-            $context
-        );
-        if (is_string($fallback)) {
-            $body = $fallback;
-        }
-    }
-
-    $result = is_string($body) ? json_decode($body, true) : null;
-    if (!is_array($result)) {
-        auditLog('captcha_invalid_response');
-        return false;
-    }
-
-    if (($result['success'] ?? false) !== true) {
-        auditLog('captcha_rejected', 0, [
-            'error_codes' => array_slice((array)($result['error-codes'] ?? []), 0, 10),
-            'hostname' => (string)($result['hostname'] ?? '')
-        ]);
-        return false;
-    }
-
-    return true;
-}
-
-function userVerified(int $uid): bool
-{
-    if(!captchaEnabled() || isAdmin($uid)) return true;
-    return (int)(userRecord($uid)['verified_until']??0)>now();
-}
-
-function verificationUrl(int $uid): string
-{
-    return configWebAppUrl().'?verify=1&uid='.rawurlencode((string)$uid);
-}
-
 function requireVerification(int $uid): bool
 {
-    if(userVerified($uid)) return true;
-    sendMsg($uid,"🛡 <b>Security verification required</b>\n\nComplete the verification once to continue.",[
-        'reply_markup'=>kb([[['text'=>'🛡 Verify Now','web_app'=>['url'=>verificationUrl($uid)]]]])
-    ]);
-    return false;
+    // CAPTCHA/Turnstile was intentionally removed. Telegram initData validation,
+    // callback ownership checks and rate limits remain the primary app protections.
+    return true;
 }
 
 function secureHeaders(): void
@@ -452,6 +290,9 @@ function secureHeaders(): void
     header('Referrer-Policy: no-referrer');
     header('X-Frame-Options: SAMEORIGIN');
     header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
+    header('X-Robots-Tag: noindex, nofollow, noarchive');
+    header('Cross-Origin-Resource-Policy: same-origin');
+    header('Cross-Origin-Opener-Policy: same-origin-allow-popups');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 }
 
@@ -621,7 +462,6 @@ function userRecord(int $uid): array
             'last_start_at' => 0,
             'radhe_last_claim_month' => '',
             'sunday_last_reward_week' => '',
-            'verification_required' => true
         ];
     }
 
@@ -782,7 +622,7 @@ function referralPayment(int $uid): string
 function referralPageText(int $uid): string
 {
     $u=userRecord($uid); $n=(int)($u['referral_count']??0); $next=REFERRAL_BATCH-($n%REFERRAL_BATCH); if($next===REFERRAL_BATCH)$next=0;
-    return "<b>🎁 REFER & EARN</b>\n\nYour confirmed referrals: <b>$n</b>\n" . ($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.") . "\n\n<b>Your personal referral link:</b>\n<code>".esc(referralUrl($uid))."</code>\n\nA referral is counted only after the invited user opens the bot through your unique link, passes verification and completes the ₹".REFERRAL_PRICE." referral activation payment. Manual UTR verification prevents fake referrals.";
+    return "<b>🎁 REFER & EARN</b>\n\nYour confirmed referrals: <b>$n</b>\n" . ($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.") . "\n\n<b>Your personal referral link:</b>\n<code>".esc(referralUrl($uid))."</code>\n\nA referral is counted only after the invited user opens the bot through your unique link and completes the ₹".REFERRAL_PRICE." referral activation payment. Manual UTR verification prevents fake referrals.";
 }
 
 function sendReferral(int $uid): void
@@ -908,13 +748,6 @@ function mainKeyboard(int $uid): string
         'text' => '🛡 Privacy & Security',
         'callback_data' => 'privacy'
     ]];
-
-    if (captchaEnabled() && !userVerified($uid) && !isAdmin($uid)) {
-        $rows[] = [[
-            'text' => '🛡 Security Verify',
-            'web_app' => ['url' => verificationUrl($uid)]
-        ]];
-    }
 
     if (isAdmin($uid)) {
         $rows[] = [
@@ -4057,23 +3890,6 @@ function privacyPolicyPage(): void
     exit;
 }
 
-function verificationPage(): void
-{
-    secureHeaders();
-    header('Content-Type: text/html; charset=UTF-8');
-
-    $site = htmlspecialchars(turnstileSiteKey(), ENT_QUOTES, 'UTF-8');
-    $configured = captchaEnabled();
-
-    if (!$configured) {
-        echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAYAMUSIC Security</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;padding:28px}.card{max-width:460px;margin:10vh auto;padding:26px;border-radius:24px;background:#151820;text-align:center}code{background:#0b0d12;padding:4px 7px;border-radius:8px}</style></head><body><div class="card"><h2>🛡 Security Verification</h2><p>Cloudflare Turnstile is not fully configured on the server.</p><p><b>Missing:</b> <code>TURNSTILE_SECRET</code></p><p>Railway → Variables → add <code>TURNSTILE_SECRET</code> with your Cloudflare Secret Key, then redeploy.</p></div></body></html>';
-        exit;
-    }
-
-    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script><title>MAYAMUSIC Security</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;padding:28px}.card{max-width:420px;margin:10vh auto;padding:24px;border-radius:24px;background:#151820;text-align:center;box-shadow:0 20px 70px rgba(0,0,0,.35)}.status{margin-top:18px;min-height:24px}.ok{color:#48df87}.bad{color:#ff6b6b}</style></head><body><div class="card"><h2>🛡 Security Verification</h2><p>Complete verification to continue.</p><div class="cf-turnstile" data-sitekey="'.$site.'" data-theme="dark" data-callback="verified" data-error-callback="captchaError" data-expired-callback="captchaExpired"></div><p id="status" class="status">Waiting…</p></div><script>const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}const s=document.getElementById("status");async function verified(token){const fd=new FormData();fd.append("initData",tg?.initData||"");fd.append("token",token);s.className="status";s.textContent="Verifying securely…";try{const r=await fetch(location.pathname+"?action=verify_turnstile",{method:"POST",body:fd,credentials:"same-origin"});const d=await r.json();if(d.ok){s.className="status ok";s.textContent="✅ Verified successfully. You can return to MAYAMUSIC.";try{tg?.HapticFeedback?.notificationOccurred("success");}catch(e){}}else{s.className="status bad";s.textContent="❌ Backend verification failed. Check TURNSTILE_SECRET in Railway and redeploy.";}}catch(e){s.className="status bad";s.textContent="❌ Server connection failed. Please retry.";}}function captchaError(){s.className="status bad";s.textContent="❌ Cloudflare widget error. Check the Turnstile hostname/site key.";}function captchaExpired(){s.className="status bad";s.textContent="⚠️ Verification expired. Complete it again.";}</script></body></html>';
-    exit;
-}
-
 function miniApp(): void
 {
     secureHeaders();
@@ -5171,7 +4987,7 @@ function miniApi(): void
             jsonReply(['ok'=>false,'error'=>'invalid_player']);
         }
         $uid=(int)($player['user_id']??0);
-        if($uid<=0||!privateAccess($uid)||!userVerified($uid)){
+        if($uid<=0||!privateAccess($uid)){
             jsonReply(['ok'=>false,'error'=>'forbidden']);
         }
         $title=trim((string)($_GET['title']??''));
@@ -5201,18 +5017,6 @@ function miniApi(): void
         jsonReply(['ok'=>true,'until'=>fmtDate((int)$r['until'])]);
     }
 
-    if($action==='verify_turnstile'){
-        $auth=validateTelegramInitData(trim((string)($_POST['initData']??'')));
-        $token=trim((string)($_POST['token']??''));
-        if($auth===null||!validateTurnstileToken($token)){
-            jsonReply(['ok'=>false,'error'=>'verification_failed']);
-        }
-        $uid=(int)$auth['user_id'];
-        updateUser($uid,['verified_until'=>now()+CAPTCHA_TTL]);
-        auditLog('captcha_verified',$uid);
-        jsonReply(['ok'=>true,'verified_until'=>now()+CAPTCHA_TTL]);
-    }
-
     jsonReply(['ok'=>false,'error'=>'unknown_action']);
 }
 
@@ -5223,6 +5027,7 @@ function miniApi(): void
 
 function healthPage(): void
 {
+    secureHeaders();
     header(
         'Content-Type: text/plain; charset=UTF-8'
     );
@@ -5232,8 +5037,6 @@ function healthPage(): void
         "PHP: " . PHP_VERSION . "\n" .
         "Bot token: " . (configBotToken() !== '' ? 'configured' : 'MISSING') . "\n" .
         "WebApp: " . configWebAppUrl() . "\n" .
-        "Turnstile site key: " . (turnstileSiteKey() !== '' ? 'configured' : 'MISSING') . "\n" .
-        "Turnstile secret: " . (turnstileSecret() !== '' ? 'configured' : 'MISSING') . "\n" .
         "Cron secret: " . (directConfigValue(CRON_SECRET) !== '' ? 'configured' : 'MISSING') . "\n" .
         "Time: " . date('c') . "\n";
 }
@@ -5248,7 +5051,6 @@ function handleHttp(): bool
     if(isset($_GET['cron'])){runCronJob(trim((string)($_GET['key']??'')));return true;}
     if(isset($_GET['policy'])){privacyPolicyPage();return true;}
     if(isset($_GET['radhe'])){radhePage();return true;}
-    if(isset($_GET['verify'])){verificationPage();return true;}
 
     if (
         isset($_GET['health'])
@@ -5290,6 +5092,13 @@ function processWebhook(): void
             return;
         }
     }
+    $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($contentLength > 1048576) {
+        http_response_code(413);
+        auditLog('webhook_payload_too_large', 0, ['bytes'=>$contentLength]);
+        return;
+    }
+
     $raw =
         file_get_contents(
             'php://input'
@@ -5311,6 +5120,15 @@ function processWebhook(): void
     if (
         !is_array($update)
     ) {
+        http_response_code(400);
+        auditLog('invalid_webhook_json');
+        return;
+    }
+
+    // Accept only Telegram-style update objects and avoid processing oversized/nonsensical payloads.
+    if (count($update) > 20) {
+        http_response_code(400);
+        auditLog('invalid_webhook_shape');
         return;
     }
 
