@@ -68,17 +68,18 @@ declare(strict_types=1);
 /*
  * QUICK SETUP (OPTION A - SIMPLE PHONE/FILE EDIT)
  * ------------------------------------------------------------
- * 1) Put your BotFather token in BOT_TOKEN below.
- * 2) Put any random 32+ character value in CRON_SECRET.
- * 3) Optional: set TELEGRAM_WEBHOOK_SECRET to protect the webhook.
- * 4) Save/upload this file and open ?health=1 to verify config.
+ * 1) Put ONLY your BotFather token in BOT_TOKEN below.
+ * 2) Upload this single file to GitHub/Railway.
+ * 3) No Railway Variables, CAPTCHA, Cloudflare, API keys or other
+ *    manual configuration is required by this build.
+ * 4) Webhook URL is the WEBAPP_URL constant below.
  *
- * This build is configured for CODE-ONLY deployment.
- * No Railway Variables are required for the app configuration.
- * NEVER share your real Bot Token or Cloudflare Secret Key.
+ * IMPORTANT: Keep this repository PRIVATE because the Bot Token is
+ * a secret. If a token has ever been exposed, regenerate it in
+ * @BotFather before using this build.
  */
 
-const BOT_TOKEN = '8817347840:AAFpsNeTkzHqjnlqkV_18AjMEgIX-FXHmQo'; // <-- PUT YOUR BOT TOKEN HERE if you are not using Railway Variables.
+const BOT_TOKEN = '8817347840:AAFpsNeTkzHqjnlqkV_18AjMEgIX-FXHmQo'; // <-- ONLY VALUE YOU NEED TO CHANGE
 const ADMIN_ID = 8897821078;
 
 const BOT_NAME = 'MAYAMUSIC';
@@ -110,11 +111,9 @@ const HTTP_TIMEOUT = 18;
 const API_CONNECT_TIMEOUT = 8;
 
 /* ============================================================
-   V2 SECURITY CONFIG
-   Existing configuration is preserved. Optional secrets may be
-   supplied through environment variables on the server.
+   INTERNAL SECURITY / FEATURE LIMITS
+   No external configuration is required.
    ============================================================ */
-const TELEGRAM_WEBHOOK_SECRET = ''; // Optional: set Railway TELEGRAM_WEBHOOK_SECRET.
 const PLAYER_TTL = 86400;
 const SEARCH_TTL = 1800;
 const RATE_WINDOW = 60;
@@ -128,31 +127,23 @@ const RADHE_HOURS = 6;
 const REMINDER_INTERVAL = 1800;
 const REMINDER_MIN_IDLE = 1800;
 const SUNDAY_REWARD_HOURS = 24;
-const CRON_SECRET = 'PASTE_YOUR_RANDOM_32_CHAR_CRON_SECRET_HERE'; // <-- PUT any random 32+ character value here.
 const POLICY_VERSION = '1.0';
 
 
 /* ============================================================
-   ENVIRONMENT OVERRIDE
+   FIXED APPLICATION CONFIGURATION
    ============================================================ */
 
 function configBotToken(): string
 {
-    $local = trim(BOT_TOKEN);
-    if ($local === '' || $local === 'PASTE_YOUR_BOT_TOKEN_HERE') {
-        return '';
-    }
-    return $local;
+    $token = trim(BOT_TOKEN);
+    return ($token !== '' && $token !== 'PASTE_YOUR_BOT_TOKEN_HERE')
+        ? $token
+        : '';
 }
 
 function configWebAppUrl(): string
 {
-    $env = getenv('WEBAPP_URL');
-
-    if ($env !== false && trim($env) !== '') {
-        return rtrim(trim($env), '/');
-    }
-
     return rtrim(WEBAPP_URL, '/');
 }
 
@@ -269,18 +260,10 @@ function jsonReply(array $data): void
 /* ============================================================
    SECURITY / CONFIG HELPERS
    ============================================================ */
-function directConfigValue(string $value): string
-{
-    $value = trim($value);
-    if ($value === '' || (str_starts_with($value, 'PASTE_YOUR_') && str_ends_with($value, '_HERE'))) {
-        return '';
-    }
-    return $value;
-}
 function requireVerification(int $uid): bool
 {
-    // CAPTCHA/Turnstile was intentionally removed. Telegram initData validation,
-    // callback ownership checks and rate limits remain the primary app protections.
+    // Telegram Mini App session validation and callback ownership checks remain
+    // the primary application protections.
     return true;
 }
 
@@ -601,13 +584,34 @@ function sendActivityReminders(): int
     return $count;
 }
 
-function runCronJob(string $key): void
+function runAutomaticMaintenance(): void
 {
-    $expected=directConfigValue(CRON_SECRET);
-    if ($expected==='' || !hash_equals($expected,$key)) { http_response_code(403); echo 'Forbidden'; return; }
-    $a=grantSundayRewards(); $b=sendActivityReminders();
-    header('Content-Type:text/plain; charset=UTF-8');
-    echo "OK\nSunday rewards: $a\nReminders: $b\n";
+    // No extra secret or Railway variable is required. A short lock prevents
+    // repeated webhook requests from running maintenance simultaneously.
+    $lockPath = DATA_DIR . '/maintenance.lock';
+    $fp = @fopen($lockPath, 'c+');
+    if ($fp === false) return;
+    if (!@flock($fp, LOCK_EX | LOCK_NB)) { fclose($fp); return; }
+
+    $last = 0;
+    $raw = @stream_get_contents($fp);
+    if ($raw !== false && trim($raw) !== '') $last = (int)trim($raw);
+    $now = now();
+    if ($last > 0 && ($now - $last) < 60) {
+        @flock($fp, LOCK_UN); fclose($fp); return;
+    }
+    ftruncate($fp, 0); rewind($fp); fwrite($fp, (string)$now); fflush($fp);
+
+    // Maintenance is best-effort; failures must never break Telegram updates.
+    try {
+        grantSundayRewards();
+        sendActivityReminders();
+    } catch (Throwable $e) {
+        error_log('MAYAMUSIC maintenance: ' . $e->getMessage());
+    }
+
+    @flock($fp, LOCK_UN);
+    fclose($fp);
 }
 
 function referralPayment(int $uid): string
@@ -2823,7 +2827,6 @@ function setWebhookCommand(int $uid): void
                         'callback_query',
                         'pre_checkout_query'
                     ]),
-                ...((telegramWebhookSecret() !== '') ? ['secret_token'=>telegramWebhookSecret()] : [])
             ]
         );
 
@@ -3886,7 +3889,7 @@ function handleCallback(
 function privacyPolicyPage(): void
 {
     secureHeaders(); header('Content-Type:text/html; charset=UTF-8');
-    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAYAMUSIC Privacy Policy</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;line-height:1.6}.wrap{max-width:760px;margin:auto;padding:28px}.card{background:#141720;border:1px solid #252a36;border-radius:24px;padding:24px;margin:14px 0}h1{font-size:30px}h2{font-size:18px}small{opacity:.6}</style></head><body><div class="wrap"><h1>🛡 MAYAMUSIC Privacy Policy</h1><small>Version '.POLICY_VERSION.' • Updated '.date('d M Y').'</small><div class="card"><h2>1. What we process</h2><p>Telegram user ID, username/first name when supplied by Telegram, account status, premium expiry, referral status, search/player session data and payment/UTR records needed to operate the service. Security logs may contain request metadata such as IP address when a web request reaches the server.</p></div><div class="card"><h2>2. Why</h2><p>These records are used for authentication, music search/player access, premium activation, referral rewards, fraud/abuse prevention, support and payment verification.</p></div><div class="card"><h2>3. Third parties</h2><p>Music search/download API, iTunes artwork search, LRCLIB lyrics, Telegram Bot API and Cloudflare Turnstile may process requests necessary for their respective functions. Payment is manual UPI.</p></div><div class="card"><h2>4. Payments</h2><p>UPI payments are manually verified using the UTR you submit. Do not send card PIN, UPI PIN, OTP or passwords to the bot. Transaction records may be retained for reconciliation, abuse prevention and account disputes.</p></div><div class="card"><h2>5. Retention</h2><p>Temporary search/player sessions expire automatically. Other account, security and payment records are retained only as long as needed for service operation, security, support or legitimate transaction records.</p></div><div class="card"><h2>6. Deletion</h2><p>Use <b>/delete_data</b> to remove user-level profile/session data where applicable. Transaction records may be retained where necessary for payment/account handling.</p></div><div class="card"><h2>7. Security</h2><p>Telegram Mini App initData is server-validated, callbacks are rate-limited, player tokens expire, and webhook requests can be protected by a Telegram secret token.</p></div><div class="card"><h2>8. Contact</h2><p>Support: @'.esc(SUPPORT_USERNAME).'</p></div></div></body></html>';
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAYAMUSIC Privacy Policy</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;line-height:1.6}.wrap{max-width:760px;margin:auto;padding:28px}.card{background:#141720;border:1px solid #252a36;border-radius:24px;padding:24px;margin:14px 0}h1{font-size:30px}h2{font-size:18px}small{opacity:.6}</style></head><body><div class="wrap"><h1>🛡 MAYAMUSIC Privacy Policy</h1><small>Version '.POLICY_VERSION.' • Updated '.date('d M Y').'</small><div class="card"><h2>1. What we process</h2><p>Telegram user ID, username/first name when supplied by Telegram, account status, premium expiry, referral status, search/player session data and payment/UTR records needed to operate the service. Security logs may contain request metadata such as IP address when a web request reaches the server.</p></div><div class="card"><h2>2. Why</h2><p>These records are used for authentication, music search/player access, premium activation, referral rewards, fraud/abuse prevention, support and payment verification.</p></div><div class="card"><h2>3. Third parties</h2><p>Music search/download API, iTunes artwork search, LRCLIB lyrics and Telegram Bot API may process requests necessary for their respective functions. Payment is manual UPI.</p></div><div class="card"><h2>4. Payments</h2><p>UPI payments are manually verified using the UTR you submit. Do not send card PIN, UPI PIN, OTP or passwords to the bot. Transaction records may be retained for reconciliation, abuse prevention and account disputes.</p></div><div class="card"><h2>5. Retention</h2><p>Temporary search/player sessions expire automatically. Other account, security and payment records are retained only as long as needed for service operation, security, support or legitimate transaction records.</p></div><div class="card"><h2>6. Deletion</h2><p>Use <b>/delete_data</b> to remove user-level profile/session data where applicable. Transaction records may be retained where necessary for payment/account handling.</p></div><div class="card"><h2>7. Security</h2><p>Telegram Mini App initData is server-validated, callbacks are rate-limited, player tokens expire, and webhook payloads are validated before processing.</p></div><div class="card"><h2>8. Contact</h2><p>Support: @'.esc(SUPPORT_USERNAME).'</p></div></div></body></html>';
     exit;
 }
 
@@ -5037,7 +5040,6 @@ function healthPage(): void
         "PHP: " . PHP_VERSION . "\n" .
         "Bot token: " . (configBotToken() !== '' ? 'configured' : 'MISSING') . "\n" .
         "WebApp: " . configWebAppUrl() . "\n" .
-        "Cron secret: " . (directConfigValue(CRON_SECRET) !== '' ? 'configured' : 'MISSING') . "\n" .
         "Time: " . date('c') . "\n";
 }
 
@@ -5048,7 +5050,6 @@ function healthPage(): void
 
 function handleHttp(): bool
 {
-    if(isset($_GET['cron'])){runCronJob(trim((string)($_GET['key']??'')));return true;}
     if(isset($_GET['policy'])){privacyPolicyPage();return true;}
     if(isset($_GET['radhe'])){radhePage();return true;}
 
@@ -5083,15 +5084,6 @@ function handleHttp(): bool
 
 function processWebhook(): void
 {
-    $expectedSecret=telegramWebhookSecret();
-    if($expectedSecret!==''){
-        $received=(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??'');
-        if($received===''||!hash_equals($expectedSecret,$received)){
-            http_response_code(403);
-            auditLog('telegram_webhook_rejected');
-            return;
-        }
-    }
     $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
     if ($contentLength > 1048576) {
         http_response_code(413);
@@ -5199,6 +5191,7 @@ function processWebhook(): void
    ============================================================ */
 
 cleanExpiredData();
+runAutomaticMaintenance();
 
 if (
     handleHttp()
