@@ -101,9 +101,9 @@ const API_CONNECT_TIMEOUT = 8;
    Existing configuration is preserved. Optional secrets may be
    supplied through environment variables on the server.
    ============================================================ */
-const TURNSTILE_SITE_KEY = '';
-const TURNSTILE_SECRET = '';
-const TELEGRAM_WEBHOOK_SECRET = '';
+const TURNSTILE_SITE_KEY = '0x4AAAAAAFE75l1u_wLPxH2Z';
+const TURNSTILE_SECRET = '0x4AAAAAAFE75jNstXx-wp2k32TA9gNb4eI';
+const TELEGRAM_WEBHOOK_SECRET = 'hosting-production-aacd.up.railway.app';
 const CAPTCHA_TTL = 86400;
 const PLAYER_TTL = 86400;
 const SEARCH_TTL = 1800;
@@ -111,6 +111,15 @@ const RATE_WINDOW = 60;
 const RATE_LIMIT_SEARCH = 30;
 const RATE_LIMIT_API = 60;
 const RATE_LIMIT_REDEEM = 10;
+const REFERRAL_PRICE = 2;
+const REFERRAL_REWARD_DAYS = 3;
+const REFERRAL_BATCH = 5;
+const RADHE_HOURS = 6;
+const REMINDER_INTERVAL = 1800;
+const REMINDER_MIN_IDLE = 1800;
+const SUNDAY_REWARD_HOURS = 24;
+const CRON_SECRET = 'MAYA-CRON-SzAroR_h79Sgad55dgcLxJex';
+const POLICY_VERSION = '1.0';
 
 
 /* ============================================================
@@ -525,7 +534,17 @@ function userRecord(int $uid): array
             'last_seen' => now(),
             'premium_until' => 0,
             'username' => '',
-            'first_name' => ''
+            'first_name' => '',
+            'ref_code' => '',
+            'referred_by' => '',
+            'referral_count' => 0,
+            'referral_rewarded' => 0,
+            'active_days' => [],
+            'last_reminder_at' => 0,
+            'last_start_at' => 0,
+            'radhe_last_claim_month' => '',
+            'sunday_last_reward_week' => '',
+            'verification_required' => true
         ];
     }
 
@@ -563,6 +582,179 @@ function updateUser(
     writeJson('users', $users);
 
     return $user;
+}
+
+
+function ensureRefCode(int $uid): string
+{
+    $users = readJson('users');
+    $key = (string)$uid;
+    $code = trim((string)($users[$key]['ref_code'] ?? ''));
+    if ($code !== '') return $code;
+    do {
+        $code = 'MAYA' . strtoupper(substr(bin2hex(random_bytes(5)), 0, 8));
+    } while (isset($users[$key]) && in_array($code, array_column($users, 'ref_code'), true));
+    $users[$key]['ref_code'] = $code;
+    writeJson('users', $users);
+    return $code;
+}
+
+function referralUrl(int $uid): string
+{
+    return 'https://t.me/' . ltrim(BOT_USERNAME, '@') . '?start=ref_' . rawurlencode(ensureRefCode($uid));
+}
+
+function parseReferralArg(string $args): string
+{
+    $args = trim($args);
+    if (preg_match('/^ref_([A-Za-z0-9]+)$/i', $args, $m)) return strtoupper($m[1]);
+    return '';
+}
+
+function findUserByRefCode(string $code): int
+{
+    if ($code === '') return 0;
+    foreach (readJson('users') as $uid => $u) {
+        if (strcasecmp((string)($u['ref_code'] ?? ''), $code) === 0) return (int)$uid;
+    }
+    return 0;
+}
+
+function trackActiveDay(int $uid): void
+{
+    $u = userRecord($uid);
+    $days = is_array($u['active_days'] ?? null) ? $u['active_days'] : [];
+    $today = date('Y-m-d');
+    if (!in_array($today, $days, true)) {
+        $days[] = $today;
+        $days = array_slice($days, -14);
+        updateUser($uid, ['active_days' => $days]);
+    }
+}
+
+function activeSevenDays(int $uid): bool
+{
+    $days = userRecord($uid)['active_days'] ?? [];
+    if (!is_array($days)) return false;
+    $set = array_fill_keys($days, true);
+    for ($i=0; $i<7; $i++) if (!isset($set[date('Y-m-d', strtotime('-'.$i.' days'))])) return false;
+    return true;
+}
+
+function weekKey(): string { return date('o-W'); }
+
+function addAccessHours(int $uid, int $hours, string $reason): int
+{
+    $base = max(now(), premiumUntil($uid));
+    $until = $base + ($hours * 3600);
+    updateUser($uid, ['premium_until'=>$until]);
+    auditLog('access_reward',$uid,['hours'=>$hours,'reason'=>$reason,'until'=>$until]);
+    return $until;
+}
+
+function grantSundayRewards(): int
+{
+    if ((int)date('w') !== 0) return 0;
+    $count=0;
+    foreach (readJson('users') as $uid => $u) {
+        $id=(int)$uid;
+        if ($id<=0 || isAdmin($id) || !activeSevenDays($id)) continue;
+        if (($u['sunday_last_reward_week'] ?? '') === weekKey()) continue;
+        addAccessHours($id,SUNDAY_REWARD_HOURS,'sunday_7_day_activity');
+        updateUser($id,['sunday_last_reward_week'=>weekKey()]);
+        sendMsg($id,"🎁 <b>SUNDAY FREE ACCESS</b>\n\nYou completed 7 consecutive active days. Your 24-hour song-play access is active until:\n<b>".fmtDate(premiumUntil($id))."</b>");
+        $count++;
+    }
+    return $count;
+}
+
+function sendActivityReminders(): int
+{
+    $count=0; $t=now();
+    foreach (readJson('users') as $uid => $u) {
+        $id=(int)$uid;
+        if ($id<=0 || isAdmin($id)) continue;
+        $lastSeen=(int)($u['last_seen']??0);
+        $lastReminder=(int)($u['last_reminder_at']??0);
+        if ($lastSeen<=0 || $t-$lastSeen<REMINDER_MIN_IDLE || $t-$lastReminder<REMINDER_INTERVAL) continue;
+        if (($u['premium_until']??0)>$t) continue;
+        $r=sendMsg($id,"🎵 <b>MAYAMUSIC</b>\n\nYou haven't used the bot recently. Come back and search your favourite song.\n\n⭐ Premium • 🎧 Mini Player • 🎤 Lyrics • ⏭ Auto-next",['reply_markup'=>kb([[['text'=>'🎵 Open MAYAMUSIC','callback_data'=>'home']],[['text'=>'⭐ Premium','callback_data'=>'premium']]])]);
+        if (($r['ok']??false)===true) { updateUser($id,['last_reminder_at'=>$t]); $count++; }
+    }
+    return $count;
+}
+
+function runCronJob(string $key): void
+{
+    $expected=envOrConst('CRON_SECRET',CRON_SECRET);
+    if ($expected==='' || !hash_equals($expected,$key)) { http_response_code(403); echo 'Forbidden'; return; }
+    $a=grantSundayRewards(); $b=sendActivityReminders();
+    header('Content-Type:text/plain; charset=UTF-8');
+    echo "OK\nSunday rewards: $a\nReminders: $b\n";
+}
+
+function referralPayment(int $uid): string
+{
+    $payments=readJson('payments');
+    $id='REF-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(3)));
+    $payments[$id]=['id'=>$id,'user_id'=>$uid,'amount'=>REFERRAL_PRICE,'type'=>'referral','status'=>'created','utr'=>'','created_at'=>now(),'utr_submitted_at'=>0,'approved_at'=>0,'expires_at'=>now()+86400,'gateway'=>'manual_upi','gateway_status'=>'manual','payment_id'=>''];
+    writeJson('payments',$payments);
+    return $id;
+}
+
+function referralPageText(int $uid): string
+{
+    $u=userRecord($uid); $n=(int)($u['referral_count']??0); $next=REFERRAL_BATCH-($n%REFERRAL_BATCH); if($next===REFERRAL_BATCH)$next=0;
+    return "<b>🎁 REFER & EARN</b>\n\nYour confirmed referrals: <b>$n</b>\n" . ($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.") . "\n\n<b>Your personal referral link:</b>\n<code>".esc(referralUrl($uid))."</code>\n\nA referral is counted only after the invited user opens the bot through your unique link, passes verification and completes the ₹".REFERRAL_PRICE." referral activation payment. Manual UTR verification prevents fake referrals.";
+}
+
+function sendReferral(int $uid): void
+{
+    if (!requireVerification($uid)) return;
+    $pid=referralPayment($uid);
+    $upi='upi://pay?pa='.rawurlencode(UPI_ID).'&pn='.rawurlencode(UPI_NAME).'&am='.number_format(REFERRAL_PRICE,2,'.','').'&cu=INR&tn='.rawurlencode('MAYA REF '.$pid);
+    $qr='https://api.qrserver.com/v1/create-qr-code/?size=320x320&data='.rawurlencode($upi);
+    sendMsg($uid,referralPageText($uid)."\n\n<b>Referral activation</b>\nPay ₹".REFERRAL_PRICE." by UPI, then submit UTR:\n<code>/utr $pid YOUR_UTR</code>",['reply_markup'=>kb([[['text'=>'📲 Pay ₹2','url'=>$upi]],[['text'=>'🧾 Submit ₹2 UTR','callback_data'=>'utr:'.$pid]]])]);
+    tg('sendPhoto',['chat_id'=>$uid,'photo'=>$qr,'caption'=>'📲 Scan this UPI QR to pay ₹2 for referral activation. Then submit the UTR.']);
+}
+
+function bindReferralFromStart(int $uid, string $args): void
+{
+    $code=parseReferralArg($args); if($code==='') return;
+    $u=userRecord($uid);
+    if (($u['referred_by']??'')!=='') return;
+    $referrer=findUserByRefCode($code);
+    if($referrer<=0 || $referrer===$uid) return;
+    updateUser($uid,['referred_by'=>$code,'referrer_id'=>$referrer,'referral_verified'=>false]);
+    auditLog('referral_bound',$uid,['referrer'=>$referrer,'code'=>$code]);
+}
+
+function finalizeReferral(int $paymentUser, string $paymentId): void
+{
+    $u=userRecord($paymentUser); if(($u['referral_verified']??false)===true) return;
+    $referrer=(int)($u['referrer_id']??0); if($referrer<=0) return;
+    updateUser($paymentUser,['referral_verified'=>true]);
+    $ru=userRecord($referrer); $count=(int)($ru['referral_count']??0)+1;
+    updateUser($referrer,['referral_count'=>$count]);
+    if($count % REFERRAL_BATCH===0) addAccessHours($referrer,REFERRAL_REWARD_DAYS*24,'referral_'.$count);
+    sendMsg($referrer,"🎉 <b>Referral confirmed!</b>\nYour total confirmed referrals: <b>$count</b>\n".($count%REFERRAL_BATCH===0?"🎁 You earned <b>".REFERRAL_REWARD_DAYS." days</b> free access.":"Keep sharing to unlock the next reward."));
+    auditLog('referral_confirmed',$paymentUser,['referrer'=>$referrer,'payment'=>$paymentId]);
+}
+
+function claimRadhe(int $uid): array
+{
+    $month=date('Y-m'); $u=userRecord($uid);
+    if(($u['radhe_last_claim_month']??'')===$month) return ['ok'=>false,'message'=>'This month’s Radhe Radhe 6-hour access has already been used.'];
+    updateUser($uid,['radhe_last_claim_month'=>$month]);
+    $until=addAccessHours($uid,RADHE_HOURS,'radhe_radhe_monthly');
+    return ['ok'=>true,'until'=>$until];
+}
+
+function radhePage(): void
+{
+    secureHeaders(); header('Content-Type:text/html; charset=UTF-8');
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body{margin:0;background:radial-gradient(circle at 50% 30%,#ffb3cf,#6b1746 45%,#160714);color:#fff;font-family:system-ui;min-height:100vh;display:grid;place-items:center;text-align:center}.card{padding:30px}.orb{width:180px;height:180px;border-radius:50%;margin:0 auto 25px;background:radial-gradient(circle,#fff,#ffd1e6 25%,#ff6da8 55%,transparent 70%);animation:pulse 2s infinite;box-shadow:0 0 80px #ff8fbe}.om{font-size:42px;font-weight:900}.sub{opacity:.85}@keyframes pulse{50%{transform:scale(1.08);filter:brightness(1.2)}}button{border:0;border-radius:18px;padding:15px 24px;font-weight:800;margin-top:22px}</style></head><body><div class="card"><div class="orb"></div><div class="om">राधे राधे</div><div class="sub">Prem • Bhakti • Music</div><p id="status">Verifying your Telegram session…</p><button id="claim" hidden>✨ Claim 6 Hours Free</button></div><script>const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}const s=document.getElementById("status"),b=document.getElementById("claim");async function claim(){const fd=new FormData();fd.append("initData",tg?.initData||"");const r=await fetch(location.pathname+"?action=claim_radhe",{method:"POST",body:fd});const d=await r.json();s.textContent=d.ok?"🌸 6-hour free music access is active until "+d.until:"⚠️ "+(d.message||"Already used this month");b.hidden=true;}if(tg?.initData){b.hidden=false;b.onclick=claim;s.textContent="Tap below to claim your monthly 6-hour access.";}else{s.textContent="Open this page from Telegram."}</script></body></html>';
+    exit;
 }
 
 function premiumUntil(int $uid): int
@@ -631,6 +823,10 @@ function mainKeyboard(int $uid): string
         ]
     ];
 
+    $rows[] = [
+        ['text'=>'🎁 Refer & Earn','callback_data'=>'referral'],
+        ['text'=>'📜 Privacy Policy','callback_data'=>'policy']
+    ];
     $rows[] = [[
         'text' => '🛡 Privacy & Security',
         'callback_data' => 'privacy'
@@ -1081,13 +1277,12 @@ function showSearch(
 
         $buttons[] = [
             [
-                'text' =>
-                    '▶️ ' . $title,
-                'callback_data' =>
-                    'pick:' .
-                    $session .
-                    ':' .
-                    $index
+                'text' => '▶️ ' . $title,
+                'callback_data' => 'pick:' . $session . ':' . $index
+            ],
+            [
+                'text' => '⬇️ Download',
+                'url' => (string)$song['download_url']
             ]
         ];
     }
@@ -1126,6 +1321,8 @@ function premiumText(): string
         "⏮ Previous / Next\n" .
         "▶️ Telegram Mini Player\n" .
         "☰ Queue\n" .
+        "⬇️ In-player Download button\n" .
+        "↔️ Swipe Previous / Next\n" .
         "🎟 Redeem key support\n" .
         "👤 Premium account\n\n" .
 
@@ -1239,6 +1436,8 @@ function accountText(int $uid): string
 
     $active =
         $until > now();
+    $refCount=(int)($user['referral_count']??0);
+    $activeDays=is_array($user['active_days']??null)?count($user['active_days']):0;
 
     $payments =
         readJson('payments');
@@ -1282,6 +1481,10 @@ function accountText(int $uid): string
         "\n" .
         "<b>Valid until:</b> " .
         $valid .
+        "\n" .
+        "<b>Confirmed referrals:</b> " . $refCount .
+        "\n" .
+        "<b>Active days tracked:</b> " . $activeDays .
         "\n" .
         "<b>Last payment:</b> " .
         esc(
@@ -1705,61 +1908,29 @@ function processPaymentDecision(
         (int)$payment['user_id'];
 
     if ($approve) {
-        $base =
-            max(
-                now(),
-                premiumUntil($uid)
-            );
+        $isReferral = (($payment['type'] ?? '') === 'referral');
+        $until = 0;
 
-        $until =
-            $base +
-            (ACCESS_DAYS * 86400);
+        if (!$isReferral) {
+            $base = max(now(), premiumUntil($uid));
+            $until = $base + (ACCESS_DAYS * 86400);
+            updateUser($uid, ['premium_until' => $until]);
+        }
 
-        $payment['status'] =
-            'approved';
+        $payment['status'] = 'approved';
+        $payment['approved_at'] = now();
+        $payment['expires_at'] = $until;
+        $payments[$paymentId] = $payment;
+        writeJson('payments', $payments);
 
-        $payment['approved_at'] =
-            now();
-
-        $payment['expires_at'] =
-            $until;
-
-        $payments[$paymentId] =
-            $payment;
-
-        writeJson(
-            'payments',
-            $payments
-        );
-
-        updateUser(
-            $uid,
-            [
-                'premium_until' =>
-                    $until
-            ]
-        );
-
-        sendMsg(
-            $uid,
-            "✅ <b>Payment Approved</b>\n\n" .
-            "⭐ Premium activated.\n\n" .
-            "Valid until:\n" .
-            "<b>" .
-            fmtDate($until) .
-            "</b>"
-        );
-
-        sendMsg(
-            $adminId,
-            "✅ Payment approved.\n" .
-            "User: <code>" .
-            $uid .
-            "</code>\n" .
-            "Until: <b>" .
-            fmtDate($until) .
-            "</b>"
-        );
+        if ($isReferral) {
+            finalizeReferral($uid, $paymentId);
+            sendMsg($uid,"✅ <b>₹2 referral activation verified.</b>\n\nYour referral has been confirmed. The inviter receives the referral credit after verification.");
+            sendMsg($adminId,"✅ Referral payment approved.\nUser: <code>".$uid."</code>\nPayment: <code>".esc($paymentId)."</code>");
+        } else {
+            sendMsg($uid,"✅ <b>Payment Approved</b>\n\n⭐ Premium activated.\n\nValid until:\n<b>".fmtDate($until)."</b>");
+            sendMsg($adminId,"✅ Payment approved.\nUser: <code>".$uid."</code>\nUntil: <b>".fmtDate($until)."</b>");
+        }
     } else {
         $payment['status'] =
             'declined';
@@ -3034,6 +3205,7 @@ function handleMessage(
         );
 
     userRecord($uid);
+    trackActiveDay($uid);
 
     updateUser(
         $uid,
@@ -3066,7 +3238,14 @@ function handleMessage(
     ] =
         parseCommand($text);
 
+    if (strtoupper(trim($text)) === '/RADHE RADHE') {
+        sendMsg($uid,"🌸 <b>राधे राधे</b> 🌸\n\nAapke liye ek special 6-hour free music access unlock flow ready hai. Ye offer month me sirf <b>1 baar</b> claim kiya ja sakta hai.",['reply_markup'=>kb([[['text'=>'🌸 Open Radhe Radhe','web_app'=>['url'=>configWebAppUrl().'?radhe=1']]]])]);
+        return;
+    }
+
     if ($command === '/start') {
+        bindReferralFromStart($uid, $args);
+        updateUser($uid,['last_start_at'=>now()]);
         if ($chatType !== 'private') {
             sendMsg(
                 $chatId,
@@ -3115,6 +3294,13 @@ function handleMessage(
     if ($command === '/help') {
         sendHelp($uid);
         return;
+    }
+
+    if ($command === '/referral' || $command === '/refer') {
+        sendReferral($uid); return;
+    }
+    if ($command === '/privacy' || $command === '/policy') {
+        sendMsg($uid,"<b>📜 Privacy Policy</b>\n\nOpen the secure Mini App to read what MAYAMUSIC collects, why it is used, retention and deletion controls.",['reply_markup'=>kb([[['text'=>'📖 Read Privacy Policy','web_app'=>['url'=>configWebAppUrl().'?policy=1']]]])]); return;
     }
 
     if (
@@ -3310,6 +3496,18 @@ function handleCallback(
 
         sendPremium($uid);
 
+        return;
+    }
+
+    if ($data === 'referral') {
+        answerCb($id);
+        sendReferral($uid);
+        return;
+    }
+
+    if ($data === 'policy') {
+        answerCb($id);
+        sendMsg($uid,"<b>📜 Privacy Policy</b>\n\nRead the full policy in the secure Mini App.",['reply_markup'=>kb([[['text'=>'📖 Read Privacy Policy','web_app'=>['url'=>configWebAppUrl().'?policy=1']]], [['text'=>'🏠 Home','callback_data'=>'home']]])]);
         return;
     }
 
@@ -3767,6 +3965,14 @@ function handleCallback(
    MINI APP PLAYER
    ============================================================ */
 
+
+function privacyPolicyPage(): void
+{
+    secureHeaders(); header('Content-Type:text/html; charset=UTF-8');
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAYAMUSIC Privacy Policy</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;line-height:1.6}.wrap{max-width:760px;margin:auto;padding:28px}.card{background:#141720;border:1px solid #252a36;border-radius:24px;padding:24px;margin:14px 0}h1{font-size:30px}h2{font-size:18px}small{opacity:.6}</style></head><body><div class="wrap"><h1>🛡 MAYAMUSIC Privacy Policy</h1><small>Version '.POLICY_VERSION.' • Updated '.date('d M Y').'</small><div class="card"><h2>1. What we process</h2><p>Telegram user ID, username/first name when supplied by Telegram, account status, premium expiry, referral status, search/player session data and payment/UTR records needed to operate the service. Security logs may contain request metadata such as IP address when a web request reaches the server.</p></div><div class="card"><h2>2. Why</h2><p>These records are used for authentication, music search/player access, premium activation, referral rewards, fraud/abuse prevention, support and payment verification.</p></div><div class="card"><h2>3. Third parties</h2><p>Music search/download API, iTunes artwork search, LRCLIB lyrics, Telegram Bot API and Cloudflare Turnstile may process requests necessary for their respective functions. Payment is manual UPI.</p></div><div class="card"><h2>4. Payments</h2><p>UPI payments are manually verified using the UTR you submit. Do not send card PIN, UPI PIN, OTP or passwords to the bot. Transaction records may be retained for reconciliation, abuse prevention and account disputes.</p></div><div class="card"><h2>5. Retention</h2><p>Temporary search/player sessions expire automatically. Other account, security and payment records are retained only as long as needed for service operation, security, support or legitimate transaction records.</p></div><div class="card"><h2>6. Deletion</h2><p>Use <b>/delete_data</b> to remove user-level profile/session data where applicable. Transaction records may be retained where necessary for payment/account handling.</p></div><div class="card"><h2>7. Security</h2><p>Telegram Mini App initData is server-validated, callbacks are rate-limited, player tokens expire, and webhook requests can be protected by a Telegram secret token.</p></div><div class="card"><h2>8. Contact</h2><p>Support: @'.esc(SUPPORT_USERNAME).'</p></div></div></body></html>';
+    exit;
+}
+
 function verificationPage(): void
 {
     secureHeaders();
@@ -4202,6 +4408,8 @@ class="control"
 
 <div class="panelButtons">
 
+<a id="downloadButton" class="panelButton" style="text-decoration:none;text-align:center" download>⬇️ Download</a>
+
 <button
 id="lyricsButton"
 class="panelButton"
@@ -4291,6 +4499,8 @@ const title =
 
 const artist =
     document.getElementById("artist");
+
+const downloadButton = document.getElementById("downloadButton");
 
 const playButton =
     document.getElementById("play");
@@ -4483,6 +4693,8 @@ function loadSong(
 
     artist.textContent =
         currentArtist;
+
+    if(downloadButton){ downloadButton.href=currentSong; downloadButton.setAttribute("download", (currentTitle||"song")+".mp3"); }
 
     if(currentArtwork){
         cover.src =
@@ -4724,12 +4936,13 @@ nextButton.onclick =
             );
 
         }else{
-
-            status.textContent =
-                "No next song";
+            loadRelatedAndContinue();
         }
     };
 
+let touchStartX=0, touchStartY=0;
+document.addEventListener("touchstart",e=>{const t=e.changedTouches[0];touchStartX=t.clientX;touchStartY=t.clientY;},{passive:true});
+document.addEventListener("touchend",e=>{const t=e.changedTouches[0];const dx=t.clientX-touchStartX,dy=t.clientY-touchStartY;if(Math.abs(dx)>70&&Math.abs(dx)>Math.abs(dy)){if(dx<0){nextButton.click();}else{previousButton.click();}}},{passive:true});
 progress.onclick =
     event => {
 
@@ -4886,6 +5099,16 @@ function miniApi(): void
         jsonReply(['ok'=>true,'results'=>$out]);
     }
 
+    if($action==='claim_radhe'){
+        $auth=validateTelegramInitData(trim((string)($_POST['initData']??'')));
+        if($auth===null) jsonReply(['ok'=>false,'message'=>'Invalid Telegram session.']);
+        $uid=(int)$auth['user_id'];
+        $r=claimRadhe($uid);
+        if(!$r['ok']) jsonReply($r);
+        sendMsg($uid,'🌸 <b>राधे राधे</b>\nYour 6-hour free music access is active until <b>'.fmtDate((int)$r['until']).'</b>.');
+        jsonReply(['ok'=>true,'until'=>fmtDate((int)$r['until'])]);
+    }
+
     if($action==='verify_turnstile'){
         $auth=validateTelegramInitData(trim((string)($_POST['initData']??'')));
         $token=trim((string)($_POST['token']??''));
@@ -4939,6 +5162,9 @@ function healthPage(): void
 
 function handleHttp(): bool
 {
+    if(isset($_GET['cron'])){runCronJob(trim((string)($_GET['key']??'')));return true;}
+    if(isset($_GET['policy'])){privacyPolicyPage();return true;}
+    if(isset($_GET['radhe'])){radhePage();return true;}
     if(isset($_GET['verify'])){verificationPage();return true;}
 
     if (
