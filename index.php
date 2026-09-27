@@ -27,7 +27,7 @@
  *
  * PREMIUM
  * ------------------------------------------------------------
- * â‚¹49 / 30 days
+ * ₹49 / 30 days
  * UPI payment
  * UTR submission
  * Admin approve / decline
@@ -650,7 +650,7 @@ function grantSundayRewards(): int
         if (($u['sunday_last_reward_week'] ?? '') === weekKey()) continue;
         addAccessHours($id,SUNDAY_REWARD_HOURS,'sunday_7_day_activity');
         updateUser($id,['sunday_last_reward_week'=>weekKey()]);
-        sendMsg($id,"ðŸŽ <b>SUNDAY FREE ACCESS</b>\n\nYou completed 7 consecutive active days. Your 24-hour song-play access is active until:\n<b>".fmtDate(premiumUntil($id))."</b>");
+        sendMsg($id,"🎁 <b>SUNDAY FREE ACCESS</b>\n\nYou completed 7 consecutive active days. Your 24-hour song-play access is active until:\n<b>".fmtDate(premiumUntil($id))."</b>");
         $count++;
     }
     return $count;
@@ -666,7 +666,7 @@ function sendActivityReminders(): int
         $lastReminder=(int)($u['last_reminder_at']??0);
         if ($lastSeen<=0 || $t-$lastSeen<REMINDER_MIN_IDLE || $t-$lastReminder<REMINDER_INTERVAL) continue;
         if (($u['premium_until']??0)>$t) continue;
-        $r=sendMsg($id,"ðŸŽµ <b>MAYAMUSIC</b>\n\nYou haven't used the bot recently. Come back and search your favourite song.\n\nâ­ Premium â€¢ ðŸŽ§ Mini Player â€¢ ðŸŽ¤ Lyrics â€¢ â­ Auto-next",['reply_markup'=>kb([[['text'=>'ðŸŽµ Open MAYAMUSIC','callback_data'=>'home']],[['text'=>'â­ Premium','callback_data'=>'premium']]])]);
+        $r=sendMsg($id,"🎵 <b>MAYAMUSIC</b>\n\nYou haven't used the bot recently. Come back and search your favourite song.\n\n⭐ Premium • 🎧 Mini Player • 🎤 Lyrics • ⏭ Auto-next",['reply_markup'=>kb([[['text'=>'🎵 Open MAYAMUSIC','callback_data'=>'home']],[['text'=>'⭐ Premium','callback_data'=>'premium']]])]);
         if (($r['ok']??false)===true) { updateUser($id,['last_reminder_at'=>$t]); $count++; }
     }
     return $count;
@@ -719,34 +719,34 @@ function referralPayment(int $uid): string
 function referralPageText(int $uid): string
 {
     $u=userRecord($uid); $n=(int)($u['referral_count']??0); $next=REFERRAL_BATCH-($n%REFERRAL_BATCH); if($next===REFERRAL_BATCH)$next=0;
-    if(referralActivated($uid)) return "<b>ðŸŽ REFER & EARN</b>\n\nStatus: <b>ðŸŸ¢ ACTIVATED</b>\nConfirmed referrals: <b>$n</b>\n".($next?"Next reward in <b>$next</b> confirmed referral(s).":"ðŸŽ‰ Reward batch completed.");
-    return "<b>ðŸŽ REFER & EARN</b>\n\nStatus: <b>ðŸ”’ NOT ACTIVATED</b>\n\nRefer & Earn activation requires a one-time payment:\nðŸ’³ <b>â‚¹".REFERRAL_PRICE." UPI</b> or â­ <b>".REFERRAL_STARS_PRICE." Telegram Stars</b>\n\nYour referral link will be shown <b>only after admin approval</b>.";
+    if(referralActivated($uid)) return "<b>🎁 REFER & EARN</b>\n\nStatus: <b>🟢 ACTIVATED</b>\nConfirmed referrals: <b>$n</b>\n".($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.");
+    return "<b>🎁 REFER & EARN</b>\n\nStatus: <b>🔒 NOT ACTIVATED</b>\n\nRefer & Earn activation requires a one-time payment:\n💳 <b>₹".REFERRAL_PRICE." UPI</b> or ⭐ <b>".REFERRAL_STARS_PRICE." Telegram Stars</b>\n\nYour referral link will be shown <b>only after admin approval</b>.";
 }
-function referralCenterButtons(): string { return kb([[['text'=>'ðŸ“‹ Copy / Share Referral Link','web_app'=>['url'=>configWebAppUrl().'?refcenter=1']]],[['text'=>'â¬…ï¸ Home','callback_data'=>'home']]]); }
+function referralCenterButtons(): string { return kb([[['text'=>'📋 Copy / Share Referral Link','web_app'=>['url'=>configWebAppUrl().'?refcenter=1']]],[['text'=>'⬅️ Home','callback_data'=>'home']]]); }
 
 function createReferralStarsInvoice(int $uid): void
 {
-    if(referralActivated($uid)){ sendMsg($uid,'ðŸŸ¢ <b>Refer & Earn is already activated.</b>'); return; }
+    if(referralActivated($uid)){ sendMsg($uid,'🟢 <b>Refer & Earn is already activated.</b>'); return; }
     $existing=existingReferralPayment($uid);
     if(is_array($existing)){
         $status=(string)($existing['status']??'');
         if($status==='approved'){ updateUser($uid,['referral_activated'=>true,'referral_activated_at'=>(int)($existing['approved_at']??now())]); sendReferral($uid); return; }
-        if(in_array($status,['pending','referral_stars_pending_admin'],true)){ sendMsg($uid,'ðŸŸ¡ <b>Referral payment already submitted.</b>\n\nPlease wait for admin approval.'); return; }
-        if($status==='declined'){ sendMsg($uid,'âŒ <b>Referral activation payment was declined.</b>\n\nOnly one activation payment is allowed for this Telegram user ID. Please contact support.'); return; }
+        if(in_array($status,['pending','referral_stars_pending_admin'],true)){ sendMsg($uid,'🟡 <b>Referral payment already submitted.</b>\n\nPlease wait for admin approval.'); return; }
+        if($status==='declined'){ sendMsg($uid,'❌ <b>Referral activation payment was declined.</b>\n\nOnly one activation payment is allowed for this Telegram user ID. Please contact support.'); return; }
         if(($existing['method']??'')==='upi'){
-            sendMsg($uid,'ðŸ’³ <b>Existing one-time referral payment</b>\n\nA second payment will not be created.', ['reply_markup'=>kb([[['text'=>'ðŸ’³ OPEN PAY â€¢ â‚¹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode((string)$existing['id'])]]],[['text'=>'â¬…ï¸ Refer & Earn','callback_data'=>'referral']]])]);
+            sendMsg($uid,'💳 <b>Existing one-time referral payment</b>\n\nA second payment will not be created.', ['reply_markup'=>kb([[['text'=>'💳 OPEN PAY • ₹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode((string)$existing['id'])]]],[['text'=>'⬅️ Refer & Earn','callback_data'=>'referral']]])]);
             return;
         }
-        sendMsg($uid,'â­ <b>Existing Telegram Stars payment</b>\n\nA second payment will not be created. Complete the existing invoice.'); return;
+        sendMsg($uid,'⭐ <b>Existing Telegram Stars payment</b>\n\nA second payment will not be created. Complete the existing invoice.'); return;
     }
-    if(!rateLimit('referral_stars_invoice',5,60,$uid)){sendMsg($uid,'â³ Please wait before opening another referral Stars payment.');return;}
+    if(!rateLimit('referral_stars_invoice',5,60,$uid)){sendMsg($uid,'⏳ Please wait before opening another referral Stars payment.');return;}
     $payments=readJson('payments'); do{$paymentId='REFSTAR-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));}while(isset($payments[$paymentId]));
     $payload='MAYA_REF_STARS|'.$paymentId.'|'.$uid;
     $payments[$paymentId]=['id'=>$paymentId,'user_id'=>$uid,'method'=>'stars','type'=>'referral','gateway'=>'telegram_stars','amount'=>REFERRAL_STARS_PRICE,'currency'=>'XTR','status'=>'stars_created','created_at'=>now(),'approved_at'=>0,'expires_at'=>0,'stars_charge_id'=>'','payment_id'=>$paymentId,'invoice_payload'=>$payload,'activation_locked'=>true];
-    if(!writeJson('payments',$payments)){sendMsg($uid,'âŒ Unable to create referral payment.');return;}
+    if(!writeJson('payments',$payments)){sendMsg($uid,'❌ Unable to create referral payment.');return;}
     updateUser($uid,['referral_activation_payment_id'=>$paymentId]);
-    $r=tg('sendInvoice',['chat_id'=>$uid,'title'=>'MAYAMUSIC Refer & Earn','description'=>'One-time referral activation â€” admin approval required','payload'=>$payload,'currency'=>'XTR','prices'=>json_encode([['label'=>'Referral Activation','amount'=>REFERRAL_STARS_PRICE]],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),'start_parameter'=>'maya-referral-stars']);
-    if(!($r['ok']??false)){ $ps=readJson('payments'); if(isset($ps[$paymentId])){$ps[$paymentId]['status']='invoice_failed';$ps[$paymentId]['error']=(string)($r['description']??'Invoice failed');writeJson('payments',$ps);} sendMsg($uid,'âŒ Telegram Stars payment could not be opened. Please use UPI.'); }
+    $r=tg('sendInvoice',['chat_id'=>$uid,'title'=>'MAYAMUSIC Refer & Earn','description'=>'One-time referral activation — admin approval required','payload'=>$payload,'currency'=>'XTR','prices'=>json_encode([['label'=>'Referral Activation','amount'=>REFERRAL_STARS_PRICE]],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),'start_parameter'=>'maya-referral-stars']);
+    if(!($r['ok']??false)){ $ps=readJson('payments'); if(isset($ps[$paymentId])){$ps[$paymentId]['status']='invoice_failed';$ps[$paymentId]['error']=(string)($r['description']??'Invoice failed');writeJson('payments',$ps);} sendMsg($uid,'❌ Telegram Stars payment could not be opened. Please use UPI.'); }
 }
 
 function sendReferral(int $uid): void
@@ -759,14 +759,14 @@ function sendReferral(int $uid): void
     if(is_array($existing)){
         $status=(string)($existing['status']??'');
         if($status==='approved'){updateUser($uid,['referral_activated'=>true,'referral_activated_at'=>(int)($existing['approved_at']??now())]);sendReferral($uid);return;}
-        if(in_array($status,['pending','referral_stars_pending_admin'],true)){sendMsg($uid,referralPageText($uid)."\n\nðŸŸ¡ <b>Payment submitted.</b>\nWaiting for admin approval.\n\n<b>Referral link remains locked until approval.</b>");return;}
-        if($status==='declined'){sendMsg($uid,referralPageText($uid)."\n\nâŒ <b>Payment was declined.</b>\nOnly one activation payment is allowed for this Telegram user ID. Please contact support.");return;}
+        if(in_array($status,['pending','referral_stars_pending_admin'],true)){sendMsg($uid,referralPageText($uid)."\n\n🟡 <b>Payment submitted.</b>\nWaiting for admin approval.\n\n<b>Referral link remains locked until approval.</b>");return;}
+        if($status==='declined'){sendMsg($uid,referralPageText($uid)."\n\n❌ <b>Payment was declined.</b>\nOnly one activation payment is allowed for this Telegram user ID. Please contact support.");return;}
         if(($existing['method']??'')==='upi'){
-            sendMsg($uid,referralPageText($uid)."\n\n<b>Complete your one-time activation:</b>",['reply_markup'=>kb([[['text'=>'ðŸ’³ OPEN PAY â€¢ â‚¹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode((string)$existing['id'])]]],[['text'=>'â­ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],[['text'=>'â¬…ï¸ Home','callback_data'=>'home']]])]); return;
+            sendMsg($uid,referralPageText($uid)."\n\n<b>Complete your one-time activation:</b>",['reply_markup'=>kb([[['text'=>'💳 OPEN PAY • ₹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode((string)$existing['id'])]]],[['text'=>'⭐ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],[['text'=>'⬅️ Home','callback_data'=>'home']]])]); return;
         }
-        sendMsg($uid,referralPageText($uid)."\n\nâ­ <b>Complete the existing Telegram Stars payment.</b>\nA second payment will not be created."); return;
+        sendMsg($uid,referralPageText($uid)."\n\n⭐ <b>Complete the existing Telegram Stars payment.</b>\nA second payment will not be created."); return;
     }
-    sendMsg($uid,referralPageText($uid)."\n\n<b>Choose your one-time activation method:</b>",['reply_markup'=>kb([[['text'=>'ðŸ’³ PAY â‚¹'.REFERRAL_PRICE.' â€¢ UPI','callback_data'=>'referral_upi_pay']],[['text'=>'â­ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],[['text'=>'â¬…ï¸ Home','callback_data'=>'home']]])]);
+    sendMsg($uid,referralPageText($uid)."\n\n<b>Choose your one-time activation method:</b>",['reply_markup'=>kb([[['text'=>'💳 PAY ₹'.REFERRAL_PRICE.' • UPI','callback_data'=>'referral_upi_pay']],[['text'=>'⭐ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],[['text'=>'⬅️ Home','callback_data'=>'home']]])]);
 }
 
 function bindReferralFromStart(int $uid,string $args): void
@@ -787,14 +787,14 @@ function finalizeReferral(int $paymentUser,string $paymentId): void
     updateUser($paymentUser,['referral_verified'=>true]);
     $ru=userRecord($referrer); $count=(int)($ru['referral_count']??0)+1; updateUser($referrer,['referral_count'=>$count]);
     if($count%REFERRAL_BATCH===0)addAccessHours($referrer,REFERRAL_REWARD_DAYS*24,'referral_'.$count);
-    sendMsg($referrer,"ðŸŽ‰ <b>Referral confirmed!</b>\nYour total confirmed referrals: <b>$count</b>\n".($count%REFERRAL_BATCH===0?"ðŸŽ You earned <b>".REFERRAL_REWARD_DAYS." days</b> free access.":"Keep sharing to unlock the next reward."));
+    sendMsg($referrer,"🎉 <b>Referral confirmed!</b>\nYour total confirmed referrals: <b>$count</b>\n".($count%REFERRAL_BATCH===0?"🎁 You earned <b>".REFERRAL_REWARD_DAYS." days</b> free access.":"Keep sharing to unlock the next reward."));
     auditLog('referral_confirmed',$paymentUser,['referrer'=>$referrer,'payment'=>$paymentId]);
 }
 
 function claimRadhe(int $uid): array
 {
     $month=date('Y-m'); $u=userRecord($uid);
-    if(($u['radhe_last_claim_month']??'')===$month) return ['ok'=>false,'message'=>'This monthâ€™s Radhe Radhe 6-hour access has already been used.'];
+    if(($u['radhe_last_claim_month']??'')===$month) return ['ok'=>false,'message'=>'This month’s Radhe Radhe 6-hour access has already been used.'];
     updateUser($uid,['radhe_last_claim_month'=>$month]);
     $until=addAccessHours($uid,RADHE_HOURS,'radhe_radhe_monthly');
     return ['ok'=>true,'until'=>$until];
@@ -803,7 +803,7 @@ function claimRadhe(int $uid): array
 function radhePage(): void
 {
     secureHeaders(); header('Content-Type:text/html; charset=UTF-8');
-    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body{margin:0;background:radial-gradient(circle at 50% 30%,#ffb3cf,#6b1746 45%,#160714);color:#fff;font-family:system-ui;min-height:100vh;display:grid;place-items:center;text-align:center}.card{padding:30px}.orb{width:180px;height:180px;border-radius:50%;margin:0 auto 25px;background:radial-gradient(circle,#fff,#ffd1e6 25%,#ff6da8 55%,transparent 70%);animation:pulse 2s infinite;box-shadow:0 0 80px #ff8fbe}.om{font-size:42px;font-weight:900}.sub{opacity:.85}@keyframes pulse{50%{transform:scale(1.08);filter:brightness(1.2)}}button{border:0;border-radius:18px;padding:15px 24px;font-weight:800;margin-top:22px}</style></head><body><div class="card"><div class="orb"></div><div class="om">à¤°à¤¾à¤§à¥‡ à¤°à¤¾à¤§à¥‡</div><div class="sub">Prem â€¢ Bhakti â€¢ Music</div><p id="status">Verifying your Telegram sessionâ€¦</p><button id="claim" hidden>âœ¨ Claim 6 Hours Free</button></div><script>const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}const s=document.getElementById("status"),b=document.getElementById("claim");async function claim(){const fd=new FormData();fd.append("initData",tg?.initData||"");const r=await fetch(location.pathname+"?action=claim_radhe",{method:"POST",body:fd});const d=await r.json();s.textContent=d.ok?"ðŸŒ¸ 6-hour free music access is active until "+d.until:"âš ï¸ "+(d.message||"Already used this month");b.hidden=true;}if(tg?.initData){b.hidden=false;b.onclick=claim;s.textContent="Tap below to claim your monthly 6-hour access.";}else{s.textContent="Open this page from Telegram."}</script></body></html>';
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body{margin:0;background:radial-gradient(circle at 50% 30%,#ffb3cf,#6b1746 45%,#160714);color:#fff;font-family:system-ui;min-height:100vh;display:grid;place-items:center;text-align:center}.card{padding:30px}.orb{width:180px;height:180px;border-radius:50%;margin:0 auto 25px;background:radial-gradient(circle,#fff,#ffd1e6 25%,#ff6da8 55%,transparent 70%);animation:pulse 2s infinite;box-shadow:0 0 80px #ff8fbe}.om{font-size:42px;font-weight:900}.sub{opacity:.85}@keyframes pulse{50%{transform:scale(1.08);filter:brightness(1.2)}}button{border:0;border-radius:18px;padding:15px 24px;font-weight:800;margin-top:22px}</style></head><body><div class="card"><div class="orb"></div><div class="om">राधे राधे</div><div class="sub">Prem • Bhakti • Music</div><p id="status">Verifying your Telegram session…</p><button id="claim" hidden>✨ Claim 6 Hours Free</button></div><script>const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}const s=document.getElementById("status"),b=document.getElementById("claim");async function claim(){const fd=new FormData();fd.append("initData",tg?.initData||"");const r=await fetch(location.pathname+"?action=claim_radhe",{method:"POST",body:fd});const d=await r.json();s.textContent=d.ok?"🌸 6-hour free music access is active until "+d.until:"⚠️ "+(d.message||"Already used this month");b.hidden=true;}if(tg?.initData){b.hidden=false;b.onclick=claim;s.textContent="Tap below to claim your monthly 6-hour access.";}else{s.textContent="Open this page from Telegram."}</script></body></html>';
     exit;
 }
 
@@ -841,31 +841,31 @@ function mainKeyboard(int $uid): string
     $rows = [
         [
             [
-                'text' => 'ðŸ”Ž Search Music',
+                'text' => '🔎 Search Music',
                 'callback_data' => 'search'
             ],
             [
-                'text' => 'â–¶ï¸ Player',
+                'text' => '▶️ Player',
                 'callback_data' => 'player'
             ]
         ],
         [
             [
-                'text' => 'â­ Premium',
+                'text' => '⭐ Premium',
                 'callback_data' => 'premium'
             ],
             [
-                'text' => 'ðŸŽŸ Redeem',
+                'text' => '🎟 Redeem',
                 'callback_data' => 'redeem'
             ]
         ],
         [
             [
-                'text' => 'ðŸ‘¤ Account',
+                'text' => '👤 Account',
                 'callback_data' => 'account'
             ],
             [
-                'text' => 'ðŸ’¬ Support',
+                'text' => '💬 Support',
                 'url' =>
                     'https://t.me/' .
                     ltrim(SUPPORT_USERNAME, '@')
@@ -874,12 +874,12 @@ function mainKeyboard(int $uid): string
     ];
 
     $rows[] = [
-        ['text'=>'ðŸŽ Refer & Earn','callback_data'=>'referral']
+        ['text'=>'🎁 Refer & Earn','callback_data'=>'referral']
     ];
     if (isAdmin($uid)) {
         $rows[] = [
             [
-                'text' => 'ðŸ›  Admin Panel',
+                'text' => '🛠 Admin Panel',
                 'callback_data' => 'admin'
             ]
         ];
@@ -1251,15 +1251,15 @@ function showSearch(
     string $query
 ): void {
     if (!rateLimit('search',RATE_LIMIT_SEARCH,RATE_WINDOW,$uid)) {
-        sendMsg($uid,'â³ Too many requests. Please wait a moment.');
+        sendMsg($uid,'⏳ Too many requests. Please wait a moment.');
         return;
     }
     if (!requireVerification($uid)) return;
     if (!privateAccess($uid)) {
         sendMsg(
             $uid,
-            "ðŸ”’ <b>Premium required.</b>\n\n" .
-            "Use â­ <b>Premium</b> to activate access."
+            "🔒 <b>Premium required.</b>\n\n" .
+            "Use ⭐ <b>Premium</b> to activate access."
         );
 
         return;
@@ -1270,7 +1270,7 @@ function showSearch(
     if ($query === '') {
         sendMsg(
             $uid,
-            "ðŸ”Ž <b>Search Music</b>\n\n" .
+            "🔎 <b>Search Music</b>\n\n" .
             "Example:\n" .
             "<code>/search Tatvadarshi</code>"
         );
@@ -1283,7 +1283,7 @@ function showSearch(
     if (!$results) {
         sendMsg(
             $uid,
-            "âŒ <b>No results found.</b>\n\n" .
+            "❌ <b>No results found.</b>\n\n" .
             "Try another song/artist name."
         );
 
@@ -1314,11 +1314,11 @@ function showSearch(
 
         $buttons[] = [
             [
-                'text' => 'â–¶ï¸ ' . $title,
+                'text' => '▶️ ' . $title,
                 'callback_data' => 'pick:' . $session . ':' . $index
             ],
             [
-                'text' => 'â¬‡ï¸ Download',
+                'text' => '⬇️ Download',
                 'url' => (string)$song['download_url']
             ]
         ];
@@ -1326,7 +1326,7 @@ function showSearch(
 
     sendMsg(
         $uid,
-        "<b>ðŸ”Ž SEARCH RESULTS</b>\n\n" .
+        "<b>🔎 SEARCH RESULTS</b>\n\n" .
         "Query: <code>" .
         esc($query) .
         "</code>\n\n" .
@@ -1345,9 +1345,9 @@ function showSearch(
 
 function premiumText(): string
 {
-    return "<b>âœ¨ ð— ð—”ð—¬ð—”ð— ð—¨ð—¦ð—œð—– ð—£ð—¥ð—˜ð— ð—œð—¨ð— </b>\n\n" .
-        "<b>â‚¹" . MONTHLY_PRICE . " / 30 Days</b>\n\n" .
-        "ðŸŽ§ Full music access\nðŸŽ¤ Lyrics & Queue\nâš¡ Auto-next & Mini Player\nâ¬‡ï¸ Download support\nðŸ”„ Previous / Next\n\n" .
+    return "<b>✨ 𝗠𝗔𝗬𝗔𝗠𝗨𝗦𝗜𝗖 𝗣𝗥𝗘𝗠𝗜𝗨𝗠</b>\n\n" .
+        "<b>₹" . MONTHLY_PRICE . " / 30 Days</b>\n\n" .
+        "🎧 Full music access\n🎤 Lyrics & Queue\n⚡ Auto-next & Mini Player\n⬇️ Download support\n🔄 Previous / Next\n\n" .
         "<b>Choose your payment method:</b>";
 }
 
@@ -1361,21 +1361,21 @@ function createPayment(int $uid, string $method = 'upi'): string
 
 function createStarsInvoice(int $uid): void
 {
-    if(!rateLimit('stars_invoice',5,60,$uid)){sendMsg($uid,'â³ Please wait before opening another Stars payment.');return;}
+    if(!rateLimit('stars_invoice',5,60,$uid)){sendMsg($uid,'⏳ Please wait before opening another Stars payment.');return;}
     $paymentId='STAR-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));$payload='MAYA_STARS|'.$paymentId.'|'.$uid;$payments=readJson('payments');
     $payments[$paymentId]=['id'=>$paymentId,'user_id'=>$uid,'method'=>'stars','type'=>'premium','gateway'=>'telegram_stars','amount'=>TELEGRAM_STARS_PRICE,'currency'=>'XTR','status'=>'stars_created','created_at'=>now(),'approved_at'=>0,'expires_at'=>0,'stars_charge_id'=>'','payment_id'=>$paymentId,'invoice_payload'=>$payload];writeJson('payments',$payments);
     $r=tg('sendInvoice',['chat_id'=>$uid,'title'=>'MAYAMUSIC Premium','description'=>'30 days MAYAMUSIC Premium access','payload'=>$payload,'currency'=>'XTR','prices'=>json_encode([['label'=>'Premium 30 Days','amount'=>TELEGRAM_STARS_PRICE],],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),'start_parameter'=>'maya-premium-stars']);
-    if(!($r['ok']??false)){ $p=readJson('payments');if(isset($p[$paymentId])){$p[$paymentId]['status']='invoice_failed';$p[$paymentId]['error']=(string)($r['description']??'Invoice failed');writeJson('payments',$p);} sendMsg($uid,'âŒ Telegram Stars payment could not be opened. Please try again or use UPI.'); }
+    if(!($r['ok']??false)){ $p=readJson('payments');if(isset($p[$paymentId])){$p[$paymentId]['status']='invoice_failed';$p[$paymentId]['error']=(string)($r['description']??'Invoice failed');writeJson('payments',$p);} sendMsg($uid,'❌ Telegram Stars payment could not be opened. Please try again or use UPI.'); }
 }
 
 function sendPremium(int $uid): void
 {
-    if(!rateLimit('premium',10,60,$uid)){sendMsg($uid,'â³ Please wait a moment before opening Premium again.');return;}
+    if(!rateLimit('premium',10,60,$uid)){sendMsg($uid,'⏳ Please wait a moment before opening Premium again.');return;}
     if(!requireVerification($uid))return;
     sendMsg($uid,premiumText(),['reply_markup'=>kb([
-        [['text'=>'â­ Pay 5 Telegram Stars','callback_data'=>'stars_pay']],
-        [['text'=>'ðŸ’³ PAY â€¢ UPI','callback_data'=>'payupicreate']],
-        [['text'=>'ðŸ‘¤ Account','callback_data'=>'account']]
+        [['text'=>'⭐ Pay 5 Telegram Stars','callback_data'=>'stars_pay']],
+        [['text'=>'💳 PAY • UPI','callback_data'=>'payupicreate']],
+        [['text'=>'👤 Account','callback_data'=>'account']]
     ])]);
 }
 
@@ -1390,11 +1390,11 @@ function accountText(int $uid): string
 
     if (isAdmin($uid)) {
         return
-            "<b>ðŸ‘‘ ADMIN ACCOUNT</b>\n\n" .
+            "<b>👑 ADMIN ACCOUNT</b>\n\n" .
             "<b>User ID:</b> <code>" .
             $uid .
             "</code>\n\n" .
-            "<b>Status:</b> ðŸ‘‘ PERMANENT ACCESS\n\n" .
+            "<b>Status:</b> 👑 PERMANENT ACCESS\n\n" .
             "Premium restriction: <b>DISABLED</b>\n" .
             "Admin access: <b>ACTIVE</b>";
     }
@@ -1434,8 +1434,8 @@ function accountText(int $uid): string
 
     $status =
         $active
-            ? 'ðŸŸ¢ ACTIVE'
-            : 'ðŸ”´ INACTIVE';
+            ? '🟢 ACTIVE'
+            : '🔴 INACTIVE';
 
     $valid =
         $active
@@ -1443,7 +1443,7 @@ function accountText(int $uid): string
             : 'Not active';
 
     return
-        "<b>ðŸ‘¤ ACCOUNT</b>\n\n" .
+        "<b>👤 ACCOUNT</b>\n\n" .
         "<b>User ID:</b> <code>" .
         $uid .
         "</code>\n" .
@@ -1551,7 +1551,7 @@ function redeemKey(
     string $input
 ): void {
     if (!rateLimit('redeem',RATE_LIMIT_REDEEM,RATE_WINDOW,$uid)) {
-        sendMsg($uid,'â³ Too many redeem attempts. Try again later.');
+        sendMsg($uid,'⏳ Too many redeem attempts. Try again later.');
         return;
     }
     if (!requireVerification($uid)) return;
@@ -1563,7 +1563,7 @@ function redeemKey(
     if ($key === '') {
         sendMsg(
             $uid,
-            "ðŸŽŸ <b>Redeem Key</b>\n\n" .
+            "🎟 <b>Redeem Key</b>\n\n" .
             "Use:\n" .
             "<code>/redeem MAYA-XXXXXX-XXXXXX-XXXXXX</code>"
         );
@@ -1577,7 +1577,7 @@ function redeemKey(
     if (!isset($keys[$key])) {
         sendMsg(
             $uid,
-            "âŒ Invalid redeem key."
+            "❌ Invalid redeem key."
         );
 
         return;
@@ -1592,7 +1592,7 @@ function redeemKey(
     ) {
         sendMsg(
             $uid,
-            "âŒ This key has already been used."
+            "❌ This key has already been used."
         );
 
         return;
@@ -1606,7 +1606,7 @@ function redeemKey(
     ) {
         sendMsg(
             $uid,
-            "âŒ This key has expired."
+            "❌ This key has expired."
         );
 
         return;
@@ -1648,8 +1648,8 @@ function redeemKey(
 
     sendMsg(
         $uid,
-        "âœ… <b>Key Redeemed</b>\n\n" .
-        "â­ Premium active until:\n" .
+        "✅ <b>Key Redeemed</b>\n\n" .
+        "⭐ Premium active until:\n" .
         "<b>" .
         fmtDate($until) .
         "</b>",
@@ -1659,13 +1659,13 @@ function redeemKey(
                     [
                         [
                             'text' =>
-                                'ðŸ‘¤ Account',
+                                '👤 Account',
                             'callback_data' =>
                                 'account'
                         ],
                         [
                             'text' =>
-                                'ðŸ”Ž Search',
+                                '🔎 Search',
                             'callback_data' =>
                                 'search'
                         ]
@@ -1684,7 +1684,7 @@ function submitUtr(int $uid, string $paymentId, string $utr): void
 {
     $result = submitMiniPaymentUtr($uid, $paymentId, $utr);
     if (!($result['ok'] ?? false)) {
-        sendMsg($uid, 'âŒ ' . esc((string)($result['message'] ?? 'Unable to submit payment.')));
+        sendMsg($uid, '❌ ' . esc((string)($result['message'] ?? 'Unable to submit payment.')));
     }
 }
 
@@ -1749,7 +1749,7 @@ function processPaymentDecision(
     ) {
         sendMsg(
             $adminId,
-            "âŒ Payment not found."
+            "❌ Payment not found."
         );
 
         return;
@@ -1763,7 +1763,7 @@ function processPaymentDecision(
     ) {
         sendMsg(
             $adminId,
-            "âš ï¸ Payment already processed."
+            "⚠️ Payment already processed."
         );
 
         return;
@@ -1773,8 +1773,8 @@ function processPaymentDecision(
 
     if(($payment['type']??'')==='referral'){
         $u=userRecord($uid);
-        if((string)($u['referral_activation_payment_id']??'')!==$paymentId){sendMsg($adminId,'âŒ Referral payment is not bound to this user ID.');return;}
-        if(($u['referral_activated']??false)===true){sendMsg($adminId,'âš ï¸ Refer & Earn is already activated for this user.');return;}
+        if((string)($u['referral_activation_payment_id']??'')!==$paymentId){sendMsg($adminId,'❌ Referral payment is not bound to this user ID.');return;}
+        if(($u['referral_activated']??false)===true){sendMsg($adminId,'⚠️ Refer & Earn is already activated for this user.');return;}
     }
 
     if ($approve) {
@@ -1796,11 +1796,11 @@ function processPaymentDecision(
         if ($isReferral) {
             updateUser($uid,['referral_activated'=>true,'referral_activated_at'=>now(),'referral_activation_payment_id'=>$paymentId]);
             finalizeReferral($uid,$paymentId);
-            sendMsg($uid,"âœ… <b>REFER & EARN ACTIVATED</b>\n\nYour one-time activation payment has been approved.\nðŸŽ Your referral link is now unlocked.\n\nTap <b>ðŸŽ Refer & Earn</b> to copy and share it.");
-            sendMsg($adminId,"âœ… <b>Referral payment approved.</b>\nUser: <code>".$uid."</code>\nPayment: <code>".esc($paymentId)."</code>");
+            sendMsg($uid,"✅ <b>REFER & EARN ACTIVATED</b>\n\nYour one-time activation payment has been approved.\n🎁 Your referral link is now unlocked.\n\nTap <b>🎁 Refer & Earn</b> to copy and share it.");
+            sendMsg($adminId,"✅ <b>Referral payment approved.</b>\nUser: <code>".$uid."</code>\nPayment: <code>".esc($paymentId)."</code>");
         } else {
-            sendMsg($uid,"âœ… <b>Payment Approved</b>\n\nâ­ Premium activated.\n\nValid until:\n<b>".fmtDate($until)."</b>");
-            sendMsg($adminId,"âœ… Payment approved.\nUser: <code>".$uid."</code>\nUntil: <b>".fmtDate($until)."</b>");
+            sendMsg($uid,"✅ <b>Payment Approved</b>\n\n⭐ Premium activated.\n\nValid until:\n<b>".fmtDate($until)."</b>");
+            sendMsg($adminId,"✅ Payment approved.\nUser: <code>".$uid."</code>\nUntil: <b>".fmtDate($until)."</b>");
         }
     } else {
         $payment['status'] =
@@ -1816,13 +1816,13 @@ function processPaymentDecision(
 
         sendMsg(
             $uid,
-            "âŒ <b>Payment Declined</b>\n\n" .
+            "❌ <b>Payment Declined</b>\n\n" .
             "Please contact support."
         );
 
         sendMsg(
             $adminId,
-            "âŒ Payment declined.\n" .
+            "❌ Payment declined.\n" .
             "Payment: <code>" .
             esc($paymentId) .
             "</code>"
@@ -1874,17 +1874,17 @@ function adminPanel(int $uid): void
     }
 
     $text =
-        "<b>ðŸ›  MAYAMUSIC ADMIN</b>\n\n" .
-        "ðŸ‘¥ Users: <b>" .
+        "<b>🛠 MAYAMUSIC ADMIN</b>\n\n" .
+        "👥 Users: <b>" .
         count($users) .
         "</b>\n" .
-        "ðŸŸ¢ Active premium: <b>" .
+        "🟢 Active premium: <b>" .
         $active .
         "</b>\n" .
-        "ðŸŽŸ Keys: <b>" .
+        "🎟 Keys: <b>" .
         count($keys) .
         "</b>\n" .
-        "ðŸ’³ Pending payments: <b>" .
+        "💳 Pending payments: <b>" .
         $pending .
         "</b>\n\n" .
 
@@ -1902,27 +1902,27 @@ function adminPanel(int $uid): void
         [
             [
                 'text' =>
-                    'ðŸŽŸ Generate Key',
+                    '🎟 Generate Key',
                 'callback_data' =>
                     'akey'
             ]
         ],
         [
             [
-                'text' => 'ðŸŽŸ Discount Code',
+                'text' => '🎟 Discount Code',
                 'callback_data' => 'adiscount'
             ]
         ],
         [
             [
                 'text' =>
-                    'ðŸ’³ Payments',
+                    '💳 Payments',
                 'callback_data' =>
                     'apays'
             ],
             [
                 'text' =>
-                    'ðŸŽŸ Keys',
+                    '🎟 Keys',
                 'callback_data' =>
                     'akeys'
             ]
@@ -1930,13 +1930,13 @@ function adminPanel(int $uid): void
         [
             [
                 'text' =>
-                    'ðŸ‘¥ Users',
+                    '👥 Users',
                 'callback_data' =>
                     'ausers'
             ],
             [
                 'text' =>
-                    'ðŸ“Š Stats',
+                    '📊 Stats',
                 'callback_data' =>
                     'astats'
             ]
@@ -1944,7 +1944,7 @@ function adminPanel(int $uid): void
         [
             [
                 'text' =>
-                    'ðŸ  Home',
+                    '🏠 Home',
                 'callback_data' =>
                     'home'
             ]
@@ -2012,7 +2012,7 @@ function handleAdminCommand(
 
         sendMsg(
             $uid,
-            "ðŸŽŸ <b>KEY GENERATED</b>\n\n" .
+            "🎟 <b>KEY GENERATED</b>\n\n" .
             "<code>" .
             esc($key) .
             "</code>\n\n" .
@@ -2032,12 +2032,12 @@ function handleAdminCommand(
             sendMsg($uid, "Usage: <code>/discount PERCENT [DAYS] [MAX_USES]</code>\nExample: <code>/discount 20 30 100</code>");
             return true;
         }
-        try { $code=createDiscountCode($percent,$uid,$days,$uses); } catch(Throwable $e) { error_log('MAYAMUSIC discount creation: '.$e->getMessage()); sendMsg($uid,'âŒ <b>Discount code could not be created.</b>
+        try { $code=createDiscountCode($percent,$uid,$days,$uses); } catch(Throwable $e) { error_log('MAYAMUSIC discount creation: '.$e->getMessage()); sendMsg($uid,'❌ <b>Discount code could not be created.</b>
 
 Make sure the <code>data</code> folder is writable.'); return true; }
         $codes = readJson('discounts');
         $item = $codes[$code];
-        sendMsg($uid, "ðŸŽŸ <b>DISCOUNT CODE GENERATED</b>\n\n<code>" . esc($code) . "</code>\n\nDiscount: <b>" . $percent . "% OFF</b>\nValid: <b>" . fmtDate((int)$item['expires_at']) . "</b>\nMax uses: <b>" . $uses . "</b>");
+        sendMsg($uid, "🎟 <b>DISCOUNT CODE GENERATED</b>\n\n<code>" . esc($code) . "</code>\n\nDiscount: <b>" . $percent . "% OFF</b>\nValid: <b>" . fmtDate((int)$item['expires_at']) . "</b>\nMax uses: <b>" . $uses . "</b>");
         return true;
     }
 
@@ -2085,7 +2085,7 @@ Make sure the <code>data</code> folder is writable.'); return true; }
 
         sendMsg(
             $uid,
-            "âœ… Premium granted.\n\n" .
+            "✅ Premium granted.\n\n" .
             "User: <code>" .
             $target .
             "</code>\n" .
@@ -2096,7 +2096,7 @@ Make sure the <code>data</code> folder is writable.'); return true; }
 
         sendMsg(
             $target,
-            "â­ <b>Premium Activated</b>\n\n" .
+            "⭐ <b>Premium Activated</b>\n\n" .
             "Valid until:\n" .
             "<b>" .
             fmtDate($until) .
@@ -2128,7 +2128,7 @@ Make sure the <code>data</code> folder is writable.'); return true; }
         if (isAdmin($target)) {
             sendMsg(
                 $uid,
-                "ðŸ‘‘ Admin access cannot be revoked."
+                "👑 Admin access cannot be revoked."
             );
 
             return true;
@@ -2143,7 +2143,7 @@ Make sure the <code>data</code> folder is writable.'); return true; }
 
         sendMsg(
             $uid,
-            "âœ… Premium revoked for:\n" .
+            "✅ Premium revoked for:\n" .
             "<code>" .
             $target .
             "</code>"
@@ -2151,7 +2151,7 @@ Make sure the <code>data</code> folder is writable.'); return true; }
 
         sendMsg(
             $target,
-            "âš ï¸ Your premium access has been revoked."
+            "⚠️ Your premium access has been revoked."
         );
 
         return true;
@@ -2203,7 +2203,7 @@ Make sure the <code>data</code> folder is writable.'); return true; }
 
         sendMsg(
             $uid,
-            "ðŸ“¢ <b>Broadcast complete</b>\n\n" .
+            "📢 <b>Broadcast complete</b>\n\n" .
             "Sent: <b>" .
             $sent .
             "</b>\n" .
@@ -2288,20 +2288,20 @@ function adminStats(int $uid): void
 
     sendMsg(
         $uid,
-        "<b>ðŸ“Š MAYAMUSIC STATISTICS</b>\n\n" .
-        "ðŸ‘¥ Users: <b>" .
+        "<b>📊 MAYAMUSIC STATISTICS</b>\n\n" .
+        "👥 Users: <b>" .
         count($users) .
         "</b>\n" .
-        "ðŸŽŸ Keys: <b>" .
+        "🎟 Keys: <b>" .
         count($keys) .
         "</b>\n" .
-        "ðŸ’³ Approved: <b>" .
+        "💳 Approved: <b>" .
         $approved .
         "</b>\n" .
-        "â³ Pending: <b>" .
+        "⏳ Pending: <b>" .
         $pending .
         "</b>\n" .
-        "ðŸ’° Recorded revenue: <b>â‚¹" .
+        "💰 Recorded revenue: <b>₹" .
         $revenue .
         "</b>"
     );
@@ -2322,7 +2322,7 @@ function adminUsers(int $uid): void
         readJson('users');
 
     $text =
-        "<b>ðŸ‘¥ USERS</b>\n\n";
+        "<b>👥 USERS</b>\n\n";
 
     $count = 0;
 
@@ -2340,8 +2340,8 @@ function adminUsers(int $uid): void
 
         $status =
             $until > now()
-                ? 'ðŸŸ¢'
-                : 'ðŸ”´';
+                ? '🟢'
+                : '🔴';
 
         $text .=
             "<code>" .
@@ -2373,7 +2373,7 @@ function adminUsers(int $uid): void
                     [
                         [
                             'text' =>
-                                'â¬…ï¸ Admin',
+                                '⬅️ Admin',
                             'callback_data' =>
                                 'admin'
                         ]
@@ -2398,7 +2398,7 @@ function adminKeys(int $uid): void
         readJson('keys');
 
     $text =
-        "<b>ðŸŽŸ REDEEM KEYS</b>\n\n";
+        "<b>🎟 REDEEM KEYS</b>\n\n";
 
     if (!$keys) {
         $text .=
@@ -2451,7 +2451,7 @@ function adminKeys(int $uid): void
                     [
                         [
                             'text' =>
-                                'ðŸŽŸ Generate 30D',
+                                '🎟 Generate 30D',
                             'callback_data' =>
                                 'akey'
                         ]
@@ -2459,7 +2459,7 @@ function adminKeys(int $uid): void
                     [
                         [
                             'text' =>
-                                'â¬…ï¸ Admin',
+                                '⬅️ Admin',
                             'callback_data' =>
                                 'admin'
                         ]
@@ -2484,7 +2484,7 @@ function adminPayments(int $uid): void
         readJson('payments');
 
     $text =
-        "<b>ðŸ’³ PENDING PAYMENTS</b>\n\n";
+        "<b>💳 PENDING PAYMENTS</b>\n\n";
 
     $buttons = [];
     $count = 0;
@@ -2509,7 +2509,7 @@ function adminPayments(int $uid): void
             "User: <code>" .
             (int)$payment['user_id'] .
             "</code>\n" .
-            "Amount: â‚¹" .
+            "Amount: ₹" .
             (int)$payment['amount'] .
             "\n" .
             "UTR: <code>" .
@@ -2524,13 +2524,13 @@ function adminPayments(int $uid): void
         $buttons[] = [
             [
                 'text' =>
-                    'âœ… Approve',
+                    '✅ Approve',
                 'callback_data' =>
                     'approve:' . $id
             ],
             [
                 'text' =>
-                    'âŒ Decline',
+                    '❌ Decline',
                 'callback_data' =>
                     'decline:' . $id
             ]
@@ -2551,7 +2551,7 @@ function adminPayments(int $uid): void
     $buttons[] = [
         [
             'text' =>
-                'â¬…ï¸ Admin',
+                '⬅️ Admin',
             'callback_data' =>
                 'admin'
         ]
@@ -2596,7 +2596,7 @@ function apiTest(int $uid): void
     ) {
         sendMsg(
             $uid,
-            "âŒ <b>MUSIC API TEST FAILED</b>\n\n" .
+            "❌ <b>MUSIC API TEST FAILED</b>\n\n" .
             "HTTP: <code>" .
             (int)(
                 $response['http_code']
@@ -2634,7 +2634,7 @@ function apiTest(int $uid): void
     if (is_array($first)) {
         sendMsg(
             $uid,
-            "âœ… <b>MUSIC API WORKING</b>\n\n" .
+            "✅ <b>MUSIC API WORKING</b>\n\n" .
             "HTTP: <b>" .
             (int)$response['http_code'] .
             "</b>\n" .
@@ -2686,7 +2686,7 @@ function apiTest(int $uid): void
     } else {
         sendMsg(
             $uid,
-            "âš ï¸ API responded but no valid results were found.\n\n" .
+            "⚠️ API responded but no valid results were found.\n\n" .
             "HTTP: <b>" .
             (int)$response['http_code'] .
             "</b>"
@@ -2713,7 +2713,7 @@ function webhookInfo(int $uid): void
     ) {
         sendMsg(
             $uid,
-            "âŒ Webhook check failed.\n\n" .
+            "❌ Webhook check failed.\n\n" .
             esc(
                 (string)(
                     $result['description']
@@ -2748,7 +2748,7 @@ function webhookInfo(int $uid): void
 
     sendMsg(
         $uid,
-        "<b>ðŸ”— WEBHOOK INFO</b>\n\n" .
+        "<b>🔗 WEBHOOK INFO</b>\n\n" .
         "URL:\n<code>" .
         esc(
             $url !== ''
@@ -2783,7 +2783,7 @@ function setWebhookCommand(int $uid): void
     ) {
         sendMsg(
             $uid,
-            "âŒ WEBAPP_URL must be a public HTTPS URL."
+            "❌ WEBAPP_URL must be a public HTTPS URL."
         );
 
         return;
@@ -2808,7 +2808,7 @@ function setWebhookCommand(int $uid): void
     ) {
         sendMsg(
             $uid,
-            "âœ… <b>Webhook set successfully.</b>\n\n" .
+            "✅ <b>Webhook set successfully.</b>\n\n" .
             "<code>" .
             esc($url) .
             "</code>"
@@ -2816,7 +2816,7 @@ function setWebhookCommand(int $uid): void
     } else {
         sendMsg(
             $uid,
-            "âŒ Webhook failed:\n\n" .
+            "❌ Webhook failed:\n\n" .
             "<code>" .
             esc(
                 (string)(
@@ -2843,12 +2843,12 @@ function deleteWebhookCommand(int $uid): void
     ) {
         sendMsg(
             $uid,
-            "âœ… Webhook deleted."
+            "✅ Webhook deleted."
         );
     } else {
         sendMsg(
             $uid,
-            "âŒ Failed to delete webhook."
+            "❌ Failed to delete webhook."
         );
     }
 }
@@ -2888,7 +2888,7 @@ function sendHelp(
 ): void {
     sendMsg(
         $uid,
-        "<b>ðŸŽµ MAYAMUSIC COMMANDS</b>\n\n" .
+        "<b>🎵 MAYAMUSIC COMMANDS</b>\n\n" .
 
         "<b>Music</b>\n" .
         "<code>/search song name</code>\n" .
@@ -2967,7 +2967,7 @@ function channelCommand(
         if (!$results) {
             sendMsg(
                 $chatId,
-                "âŒ No song found."
+                "❌ No song found."
             );
 
             return;
@@ -2997,14 +2997,14 @@ function channelCommand(
 
         sendMsg(
             $chatId,
-            "â–¶ï¸ <b>VC PLAY REQUEST</b>\n\n" .
+            "▶️ <b>VC PLAY REQUEST</b>\n\n" .
             "<b>" .
             esc($song['title']) .
             "</b>\n" .
             esc($song['artists']) .
             "\n\n" .
             "Song selected successfully.\n\n" .
-            "âš ï¸ Actual Telegram Voice Chat audio requires a separate MTProto/voice engine. PHP Bot API itself cannot join and stream audio into a VC."
+            "⚠️ Actual Telegram Voice Chat audio requires a separate MTProto/voice engine. PHP Bot API itself cannot join and stream audio into a VC."
         );
 
         return;
@@ -3041,7 +3041,7 @@ function channelCommand(
 
     sendMsg(
         $chatId,
-        "ðŸŽ› <b>" .
+        "🎛 <b>" .
         strtoupper(
             ltrim(
                 $command,
@@ -3132,7 +3132,7 @@ function handleMessage(
         parseCommand($text);
 
     if (strtoupper(trim($text)) === '/RADHE RADHE') {
-        sendMsg($uid,"ðŸŒ¸ <b>à¤°à¤¾à¤§à¥‡ à¤°à¤¾à¤§à¥‡</b> ðŸŒ¸\n\nAapke liye ek special 6-hour free music access unlock flow ready hai. Ye offer month me sirf <b>1 baar</b> claim kiya ja sakta hai.",['reply_markup'=>kb([[['text'=>'ðŸŒ¸ Open Radhe Radhe','web_app'=>['url'=>configWebAppUrl().'?radhe=1']]]])]);
+        sendMsg($uid,"🌸 <b>राधे राधे</b> 🌸\n\nAapke liye ek special 6-hour free music access unlock flow ready hai. Ye offer month me sirf <b>1 baar</b> claim kiya ja sakta hai.",['reply_markup'=>kb([[['text'=>'🌸 Open Radhe Radhe','web_app'=>['url'=>configWebAppUrl().'?radhe=1']]]])]);
         return;
     }
 
@@ -3142,7 +3142,7 @@ function handleMessage(
         if ($chatType !== 'private') {
             sendMsg(
                 $chatId,
-                "ðŸŽµ <b>" .
+                "🎵 <b>" .
                 BOT_NAME .
                 "</b>\n\n" .
                 "This group/channel has FREE access."
@@ -3153,7 +3153,7 @@ function handleMessage(
 
         sendMsg(
             $uid,
-            "<b>ðŸŽµ WELCOME TO MAYAMUSIC</b>\n\n" .
+            "<b>🎵 WELCOME TO MAYAMUSIC</b>\n\n" .
             "Search music, open Mini Player, lyrics, queue, premium and redeem keys.",
             [
                 'reply_markup' =>
@@ -3166,7 +3166,7 @@ function handleMessage(
 
     if ($command === '/delete_data') {
         if(!rateLimit('delete_data',3,300,$uid)){
-            sendMsg($uid,'â³ Please wait before retrying.');
+            sendMsg($uid,'⏳ Please wait before retrying.');
             return;
         }
         $users=readJson('users');
@@ -3180,7 +3180,7 @@ function handleMessage(
             writeJson($file,$data);
         }
         auditLog('user_data_delete_requested',$uid);
-        sendMsg($uid,'âœ… Your user-level profile/session data was deleted. Transaction records may be retained where necessary for payment/account handling.');
+        sendMsg($uid,'✅ Your user-level profile/session data was deleted. Transaction records may be retained where necessary for payment/account handling.');
         return;
     }
 
@@ -3208,7 +3208,7 @@ function handleMessage(
         if ($chatType !== 'private') {
             sendMsg(
                 $chatId,
-                "ðŸŽµ This group/channel is FREE.\n" .
+                "🎵 This group/channel is FREE.\n" .
                 "Premium is for private users."
             );
         } else {
@@ -3228,13 +3228,13 @@ function handleMessage(
                         [
                             [
                                 'text' =>
-                                    'â­ Premium',
+                                    '⭐ Premium',
                                 'callback_data' =>
                                     'premium'
                             ],
                             [
                                 'text' =>
-                                    'ðŸ  Home',
+                                    '🏠 Home',
                                 'callback_data' =>
                                     'home'
                             ]
@@ -3290,7 +3290,7 @@ function handleMessage(
         if (!isAdmin($uid)) {
             sendMsg(
                 $chatId,
-                "ðŸ”’ Only the bot owner/admin can control VC commands."
+                "🔒 Only the bot owner/admin can control VC commands."
             );
 
             return;
@@ -3365,7 +3365,7 @@ function handleCallback(
 
         sendMsg(
             $uid,
-            "<b>ðŸŽµ MAYAMUSIC</b>",
+            "<b>🎵 MAYAMUSIC</b>",
             [
                 'reply_markup' =>
                     mainKeyboard($uid)
@@ -3402,7 +3402,7 @@ function handleCallback(
 
     if ($data === 'policy') {
         answerCb($id);
-        sendMsg($uid,"<b>ðŸ“œ Privacy Policy</b>\n\nRead the full policy in the secure Mini App.",['reply_markup'=>kb([[['text'=>'ðŸ“– Read Privacy Policy','web_app'=>['url'=>configWebAppUrl().'?policy=1']]], [['text'=>'ðŸ  Home','callback_data'=>'home']]])]);
+        sendMsg($uid,"<b>📜 Privacy Policy</b>\n\nRead the full policy in the secure Mini App.",['reply_markup'=>kb([[['text'=>'📖 Read Privacy Policy','web_app'=>['url'=>configWebAppUrl().'?policy=1']]], [['text'=>'🏠 Home','callback_data'=>'home']]])]);
         return;
     }
 
@@ -3411,7 +3411,7 @@ function handleCallback(
 
         sendMsg(
             $uid,
-            "ðŸ”Ž Send:\n\n" .
+            "🔎 Send:\n\n" .
             "<code>/search song name</code>"
         );
 
@@ -3423,7 +3423,7 @@ function handleCallback(
 
         sendMsg(
             $uid,
-            "ðŸŽŸ Send your key:\n\n" .
+            "🎟 Send your key:\n\n" .
             "<code>/redeem MAYA-XXXXXX-XXXXXX-XXXXXX</code>"
         );
 
@@ -3436,7 +3436,7 @@ function handleCallback(
         if (!privateAccess($uid)) {
             sendMsg(
                 $uid,
-                "ðŸ”’ Premium required."
+                "🔒 Premium required."
             );
 
             return;
@@ -3444,7 +3444,7 @@ function handleCallback(
 
         sendMsg(
             $uid,
-            "â–¶ï¸ <b>Mini Player</b>\n\n" .
+            "▶️ <b>Mini Player</b>\n\n" .
             "Search a song first and then press the Player button."
         );
 
@@ -3464,7 +3464,7 @@ function handleCallback(
     if ($data === 'adiscount') {
         answerCb($id);
         if (!isAdmin($uid)) return;
-        sendMsg($uid, "ðŸŽŸ <b>DISCOUNT CODE</b>\n\nUse:\n<code>/discount 20 30 100</code>\n\n20 = discount %, 30 = validity days, 100 = maximum uses.");
+        sendMsg($uid, "🎟 <b>DISCOUNT CODE</b>\n\nUse:\n<code>/discount 20 30 100</code>\n\n20 = discount %, 30 = validity days, 100 = maximum uses.");
         return;
     }
 
@@ -3483,7 +3483,7 @@ function handleCallback(
 
         sendMsg(
             $uid,
-            "ðŸŽŸ <b>NEW 30 DAY KEY</b>\n\n" .
+            "🎟 <b>NEW 30 DAY KEY</b>\n\n" .
             "<code>" .
             esc($key) .
             "</code>"
@@ -3536,7 +3536,7 @@ function handleCallback(
     ) {
         answerCb(
             $id,
-            'Preparing playerâ€¦'
+            'Preparing player…'
         );
 
         $parts =
@@ -3565,7 +3565,7 @@ function handleCallback(
         ) {
             sendMsg(
                 $uid,
-                "âŒ Search session expired. Search again."
+                "❌ Search session expired. Search again."
             );
 
             return;
@@ -3579,7 +3579,7 @@ function handleCallback(
         ) {
             sendMsg(
                 $uid,
-                "âŒ This result does not belong to you."
+                "❌ This result does not belong to you."
             );
 
             return;
@@ -3593,7 +3593,7 @@ function handleCallback(
         ) {
             sendMsg(
                 $uid,
-                "âŒ Search session expired."
+                "❌ Search session expired."
             );
 
             return;
@@ -3604,7 +3604,7 @@ function handleCallback(
         if (!privateAccess($uid)) {
             sendMsg(
                 $uid,
-                "ðŸ”’ Premium required."
+                "🔒 Premium required."
             );
 
             return;
@@ -3626,7 +3626,7 @@ function handleCallback(
         ) {
             sendMsg(
                 $uid,
-                "âŒ Invalid song."
+                "❌ Invalid song."
             );
 
             return;
@@ -3674,7 +3674,7 @@ function handleCallback(
             );
 
         $caption =
-            "<b>â–¶ï¸ " .
+            "<b>▶️ " .
             esc($song['title']) .
             "</b>\n" .
             esc($song['artists']);
@@ -3685,7 +3685,7 @@ function handleCallback(
             )
         ) {
             $caption .=
-                "\nðŸ’¿ " .
+                "\n💿 " .
                 esc($song['album']);
         }
 
@@ -3695,7 +3695,7 @@ function handleCallback(
             )
         ) {
             $caption .=
-                "\nâ± " .
+                "\n⏱ " .
                 esc($song['duration']);
         }
 
@@ -3703,7 +3703,7 @@ function handleCallback(
             [
                 [
                     'text' =>
-                        'ðŸŽ§ OPEN MINI PLAYER',
+                        '🎧 OPEN MINI PLAYER',
                     'web_app' => [
                         'url' =>
                             playerUrl($token)
@@ -3752,18 +3752,18 @@ function handleCallback(
         $paymentId = substr($data, 4);
         $payments = readJson('payments');
         if (!isset($payments[$paymentId]) || (int)($payments[$paymentId]['user_id'] ?? 0) !== $uid) {
-            sendMsg($uid, 'âŒ Payment session not found.');
+            sendMsg($uid, '❌ Payment session not found.');
             return;
         }
-        sendMsg($uid, '<b>ðŸ’³ PAYMENT CENTER</b>\n\nOpen the secure PAY screen to see the live QR, countdown, discount code and UTR form.', ['reply_markup'=>kb([[[ 'text'=>'ðŸ’³ Open PAY', 'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode($paymentId)] ]]])]);
+        sendMsg($uid, '<b>💳 PAYMENT CENTER</b>\n\nOpen the secure PAY screen to see the live QR, countdown, discount code and UTR form.', ['reply_markup'=>kb([[[ 'text'=>'💳 Open PAY', 'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode($paymentId)] ]]])]);
         return;
     }
 
     if ($data === 'referral_upi_pay') {
-        answerCb($id, 'Opening secure PAYâ€¦');
+        answerCb($id, 'Opening secure PAY…');
         if (!requireVerification($uid)) return;
         if (referralActivated($uid)) {
-            sendMsg($uid, 'ðŸŸ¢ <b>Refer & Earn is already activated.</b>', ['reply_markup'=>referralCenterButtons()]);
+            sendMsg($uid, '🟢 <b>Refer & Earn is already activated.</b>', ['reply_markup'=>referralCenterButtons()]);
             return;
         }
         $existing = existingReferralPayment($uid);
@@ -3776,45 +3776,45 @@ function handleCallback(
                 return;
             }
             if ($status === 'pending') {
-                sendMsg($uid, 'ðŸŸ¡ <b>Payment already submitted.</b>\n\nPlease wait for admin approval.');
+                sendMsg($uid, '🟡 <b>Payment already submitted.</b>\n\nPlease wait for admin approval.');
                 return;
             }
             if ($status === 'declined') {
-                sendMsg($uid, 'âŒ <b>This one-time referral payment was declined.</b>\n\nPlease contact support.');
+                sendMsg($uid, '❌ <b>This one-time referral payment was declined.</b>\n\nPlease contact support.');
                 return;
             }
         } else {
             $paymentId = referralPayment($uid);
         }
-        sendMsg($uid, '<b>ðŸ’³ REFER & EARN â€¢ PAY</b>\n\nOne-time activation: <b>â‚¹'.REFERRAL_PRICE.'</b>\nQR validity: <b>5 minutes</b>\n\nYour referral link will remain locked until admin approval.', ['reply_markup'=>kb([[['text'=>'ðŸ’³ OPEN PAY â€¢ â‚¹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode($paymentId)]]],[['text'=>'â¬…ï¸ Refer & Earn','callback_data'=>'referral']]])]);
+        sendMsg($uid, '<b>💳 REFER & EARN • PAY</b>\n\nOne-time activation: <b>₹'.REFERRAL_PRICE.'</b>\nQR validity: <b>5 minutes</b>\n\nYour referral link will remain locked until admin approval.', ['reply_markup'=>kb([[['text'=>'💳 OPEN PAY • ₹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode($paymentId)]]],[['text'=>'⬅️ Refer & Earn','callback_data'=>'referral']]])]);
         return;
     }
 
     if ($data === 'referral_stars_pay') {
-        answerCb($id, 'Opening Telegram Starsâ€¦');
+        answerCb($id, 'Opening Telegram Stars…');
         createReferralStarsInvoice($uid);
         return;
     }
 
     if ($data === 'stars_pay') {
-        answerCb($id, 'Opening Telegram Starsâ€¦');
+        answerCb($id, 'Opening Telegram Stars…');
         createStarsInvoice($uid);
         return;
     }
 
     if ($data === 'payupicreate') {
-        answerCb($id, 'Opening secure PAYâ€¦');
+        answerCb($id, 'Opening secure PAY…');
         if (!requireVerification($uid)) return;
         $paymentId=createPayment($uid);
         $url=configWebAppUrl().'?pay='.rawurlencode($paymentId);
         sendMsg($uid,
-            "<b>ðŸ’³ ð— ð—”ð—¬ð—”ð— ð—¨ð—¦ð—œð—– â€¢ PAY</b>\n\n" .
-            "â± QR validity: <b>5 minutes</b>\n" .
-            "ðŸŽŸ Discount code: <b>optional</b>\n" .
-            "ðŸ§¾ UTR: required after payment",
+            "<b>💳 𝗠𝗔𝗬𝗔𝗠𝗨𝗦𝗜𝗖 • PAY</b>\n\n" .
+            "⏱ QR validity: <b>5 minutes</b>\n" .
+            "🎟 Discount code: <b>optional</b>\n" .
+            "🧾 UTR: required after payment",
             ['reply_markup'=>kb([
-                [['text'=>'ðŸ’³ OPEN PAY â€¢ UPI','web_app'=>['url'=>$url]]],
-                [['text'=>'â¬…ï¸ Premium','callback_data'=>'premium']]
+                [['text'=>'💳 OPEN PAY • UPI','web_app'=>['url'=>$url]]],
+                [['text'=>'⬅️ Premium','callback_data'=>'premium']]
             ])]
         );
         return;
@@ -3902,7 +3902,7 @@ function handleCallback(
 function privacyPolicyPage(): void
 {
     secureHeaders(); header('Content-Type:text/html; charset=UTF-8');
-    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAYAMUSIC Privacy Policy</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;line-height:1.6}.wrap{max-width:760px;margin:auto;padding:28px}.card{background:#141720;border:1px solid #252a36;border-radius:24px;padding:24px;margin:14px 0}h1{font-size:30px}h2{font-size:18px}small{opacity:.6}</style></head><body><div class="wrap"><h1>ðŸ›¡ MAYAMUSIC Privacy Policy</h1><small>Version '.POLICY_VERSION.' â€¢ Updated '.date('d M Y').'</small><div class="card"><h2>1. What we process</h2><p>Telegram user ID, username/first name when supplied by Telegram, account status, premium expiry, referral status, search/player session data and payment/UTR records needed to operate the service. Security logs may contain request metadata such as IP address when a web request reaches the server.</p></div><div class="card"><h2>2. Why</h2><p>These records are used for authentication, music search/player access, premium activation, referral rewards, fraud/abuse prevention, support and payment verification.</p></div><div class="card"><h2>3. Third parties</h2><p>Music search/download API, iTunes artwork search, LRCLIB lyrics and Telegram Bot API may process requests necessary for their respective functions. Payment is manual UPI.</p></div><div class="card"><h2>4. Payments</h2><p>UPI payments are manually verified using the UTR you submit. Do not send card PIN, UPI PIN, OTP or passwords to the bot. Transaction records may be retained for reconciliation, abuse prevention and account disputes.</p></div><div class="card"><h2>5. Retention</h2><p>Temporary search/player sessions expire automatically. Other account, security and payment records are retained only as long as needed for service operation, security, support or legitimate transaction records.</p></div><div class="card"><h2>6. Deletion</h2><p>Use <b>/delete_data</b> to remove user-level profile/session data where applicable. Transaction records may be retained where necessary for payment/account handling.</p></div><div class="card"><h2>7. Security</h2><p>Telegram Mini App initData is server-validated, callbacks are rate-limited, player tokens expire, and webhook payloads are validated before processing.</p></div><div class="card"><h2>8. Contact</h2><p>Support: @'.esc(SUPPORT_USERNAME).'</p></div></div></body></html>';
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAYAMUSIC Privacy Policy</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;line-height:1.6}.wrap{max-width:760px;margin:auto;padding:28px}.card{background:#141720;border:1px solid #252a36;border-radius:24px;padding:24px;margin:14px 0}h1{font-size:30px}h2{font-size:18px}small{opacity:.6}</style></head><body><div class="wrap"><h1>🛡 MAYAMUSIC Privacy Policy</h1><small>Version '.POLICY_VERSION.' • Updated '.date('d M Y').'</small><div class="card"><h2>1. What we process</h2><p>Telegram user ID, username/first name when supplied by Telegram, account status, premium expiry, referral status, search/player session data and payment/UTR records needed to operate the service. Security logs may contain request metadata such as IP address when a web request reaches the server.</p></div><div class="card"><h2>2. Why</h2><p>These records are used for authentication, music search/player access, premium activation, referral rewards, fraud/abuse prevention, support and payment verification.</p></div><div class="card"><h2>3. Third parties</h2><p>Music search/download API, iTunes artwork search, LRCLIB lyrics and Telegram Bot API may process requests necessary for their respective functions. Payment is manual UPI.</p></div><div class="card"><h2>4. Payments</h2><p>UPI payments are manually verified using the UTR you submit. Do not send card PIN, UPI PIN, OTP or passwords to the bot. Transaction records may be retained for reconciliation, abuse prevention and account disputes.</p></div><div class="card"><h2>5. Retention</h2><p>Temporary search/player sessions expire automatically. Other account, security and payment records are retained only as long as needed for service operation, security, support or legitimate transaction records.</p></div><div class="card"><h2>6. Deletion</h2><p>Use <b>/delete_data</b> to remove user-level profile/session data where applicable. Transaction records may be retained where necessary for payment/account handling.</p></div><div class="card"><h2>7. Security</h2><p>Telegram Mini App initData is server-validated, callbacks are rate-limited, player tokens expire, and webhook payloads are validated before processing.</p></div><div class="card"><h2>8. Contact</h2><p>Support: @'.esc(SUPPORT_USERNAME).'</p></div></div></body></html>';
     exit;
 }
 
@@ -4311,41 +4311,41 @@ class="progressFill"
 id="prev"
 class="control"
 >
-â®
+⏮
 </button>
 
 <button
 id="play"
 class="control play"
 >
-â–¶
+▶
 </button>
 
 <button
 id="next"
 class="control"
 >
-â­
+⏭
 </button>
 
 </div>
 
 <div class="panelButtons">
 
-<a id="downloadButton" class="panelButton" style="text-decoration:none;text-align:center" download>â¬‡ï¸ Download</a>
+<a id="downloadButton" class="panelButton" style="text-decoration:none;text-align:center" download>⬇️ Download</a>
 
 <button
 id="lyricsButton"
 class="panelButton"
 >
-ðŸŽ¤ Lyrics
+🎤 Lyrics
 </button>
 
 <button
 id="queueButton"
 class="panelButton"
 >
-â˜° Queue
+☰ Queue
 </button>
 
 </div>
@@ -4354,7 +4354,7 @@ class="panelButton"
 id="lyrics"
 class="lyrics"
 >
-Loading lyricsâ€¦
+Loading lyrics…
 </div>
 
 <div
@@ -4505,7 +4505,7 @@ function renderQueue(){
                     song.title ||
                     "Unknown"
                 ) +
-                " â€” " +
+                " — " +
                 (
                     song.artists ||
                     "Unknown Artist"
@@ -4537,7 +4537,7 @@ function loadLyrics(
 ){
 
     lyrics.textContent =
-        "Loading lyricsâ€¦";
+        "Loading lyrics…";
 
     const url =
         location.pathname +
@@ -4661,7 +4661,7 @@ function startPlayback(){
         result.then(
             () => {
                 playButton.textContent =
-                    "â¸";
+                    "⏸";
 
                 status.textContent =
                     "Playing";
@@ -4670,7 +4670,7 @@ function startPlayback(){
             () => {
 
                 playButton.textContent =
-                    "â–¶";
+                    "▶";
 
                 status.textContent =
                     "Tap Play to start";
@@ -4679,7 +4679,7 @@ function startPlayback(){
 
     }else{
         playButton.textContent =
-            "â¸";
+            "⏸";
     }
 }
 
@@ -4688,7 +4688,7 @@ function pausePlayback(){
     audio.pause();
 
     playButton.textContent =
-        "â–¶";
+        "▶";
 
     status.textContent =
         "Paused";
@@ -4749,7 +4749,7 @@ audio.addEventListener(
     () => {
 
         playButton.textContent =
-            "â¸";
+            "⏸";
 
         status.textContent =
             "Playing";
@@ -4764,7 +4764,7 @@ audio.addEventListener(
             !audio.ended
         ){
             playButton.textContent =
-                "â–¶";
+                "▶";
         }
     }
 );
@@ -4777,12 +4777,12 @@ audio.addEventListener(
             "Audio could not be played";
 
         playButton.textContent =
-            "â–¶";
+            "▶";
     }
 );
 
 async function loadRelatedAndContinue(){
-    status.textContent="Finding related musicâ€¦";
+    status.textContent="Finding related music…";
     try{
         const token=new URLSearchParams(location.search).get("token")||"";
         const url=location.pathname+"?action=related&token="+encodeURIComponent(token)+"&title="+encodeURIComponent(currentTitle)+"&artist="+encodeURIComponent(currentArtist);
@@ -4796,15 +4796,15 @@ async function loadRelatedAndContinue(){
             renderQueue();
             if(currentIndex+1<queue.length){currentIndex++;loadSong(queue[currentIndex],true);return;}
         }
-        playButton.textContent="â–¶";status.textContent="No related song available";
-    }catch(e){playButton.textContent="â–¶";status.textContent="Unable to load next song";}
+        playButton.textContent="▶";status.textContent="No related song available";
+    }catch(e){playButton.textContent="▶";status.textContent="Unable to load next song";}
 }
 audio.addEventListener("ended",async()=>{
     if(currentIndex+1<queue.length){currentIndex++;loadSong(queue[currentIndex],true);}
     else await loadRelatedAndContinue();
 });
 audio.addEventListener("error",async()=>{
-    status.textContent="Song unavailable â€” trying nextâ€¦";
+    status.textContent="Song unavailable — trying next…";
     if(currentIndex+1<queue.length){currentIndex++;loadSong(queue[currentIndex],true);}
     else await loadRelatedAndContinue();
 });
@@ -5063,8 +5063,8 @@ function submitMiniPaymentUtr(int $uid,string $id,string $utr): array {
     $p['utr']=$utr; $p['status']='pending'; $p['utr_submitted_at']=now(); $p['processing_message']='Manual verification pending';
     $dc=(string)($p['discount_code']??''); if($dc!==''&&!empty($p['discount_consumed'])){} elseif($dc!==''){ $codes=readJson('discounts'); if(isset($codes[$dc])){$codes[$dc]['uses']=(int)($codes[$dc]['uses']??0)+1;writeJson('discounts',$codes);} $p['discount_consumed']=1; }
     $ps[$id]=$p; writeJson('payments',$ps); $amt=(int)$p['amount']; $dt=$dc!==''?"\nDiscount: <b>".(int)$p['discount_percent']."% OFF</b> (<code>".esc($dc)."</code>)":'';
-    sendMsg($uid,"<b>ðŸŸ¡ PROCESSING PAYMENT</b>\n\nUTR submitted successfully.\nAmount: <b>â‚¹".$amt."</b>\nUTR: <code>".esc($utr)."</code>".$dt."\n\n<b>â³ Please wait up to 30 minutes.</b>\nYour payment will be manually verified and Premium will activate after admin approval.\n\nðŸ’š Thank you for using MAYAMUSIC.");
-    sendMsg(ADMIN_ID,"<b>ðŸ’³ NEW ".(($p['type']??'')==='referral'?'REFERRAL':'PREMIUM')." PAYMENT</b>\n\nPayment: <code>".esc($id)."</code>\nUser: <code>".$uid."</code>\nAmount: <b>â‚¹".$amt."</b>".$dt."\nUTR: <code>".esc($utr)."</code>\nSubmitted: <b>".fmtDate(now())."</b>",['reply_markup'=>kb([[['text'=>'âœ… APPROVE','callback_data'=>'approve:'.$id],['text'=>'âŒ DECLINE','callback_data'=>'decline:'.$id]]])]);
+    sendMsg($uid,"<b>🟡 PROCESSING PAYMENT</b>\n\nUTR submitted successfully.\nAmount: <b>₹".$amt."</b>\nUTR: <code>".esc($utr)."</code>".$dt."\n\n<b>⏳ Please wait up to 30 minutes.</b>\nYour payment will be manually verified and Premium will activate after admin approval.\n\n💚 Thank you for using MAYAMUSIC.");
+    sendMsg(ADMIN_ID,"<b>💳 NEW ".(($p['type']??'')==='referral'?'REFERRAL':'PREMIUM')." PAYMENT</b>\n\nPayment: <code>".esc($id)."</code>\nUser: <code>".$uid."</code>\nAmount: <b>₹".$amt."</b>".$dt."\nUTR: <code>".esc($utr)."</code>\nSubmitted: <b>".fmtDate(now())."</b>",['reply_markup'=>kb([[['text'=>'✅ APPROVE','callback_data'=>'approve:'.$id],['text'=>'❌ DECLINE','callback_data'=>'decline:'.$id]]])]);
     auditLog('upi_payment_submitted',$uid,['payment'=>$id,'amount'=>$amt]); return ['ok'=>true,'paymentId'=>$id,'status'=>'pending'];
 }
 
@@ -5079,8 +5079,8 @@ function payPage(): void
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>MAYAMUSIC PAY</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -10%,#26303b 0,#0a0d11 45%,#050608 100%);color:#fff;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:520px;margin:auto;padding:calc(18px + env(safe-area-inset-top)) 18px calc(28px + env(safe-area-inset-bottom))}.card{background:rgba(18,22,27,.9);border:1px solid rgba(255,255,255,.12);border-radius:28px;padding:20px;box-shadow:0 20px 80px rgba(0,0,0,.5);backdrop-filter:blur(18px)}.brand{text-align:center;font-weight:950;font-size:25px}.sub{text-align:center;color:#9da6b1;font-size:12px;margin:5px 0 18px}.amount{text-align:center;font-size:34px;font-weight:950}.meta{text-align:center;color:#aeb7c0;font-size:12px}.qrbox{position:relative;margin:18px auto;width:min(82vw,340px);aspect-ratio:1;border-radius:22px;background:#fff;padding:10px;overflow:hidden}.qrbox img{width:100%;height:100%;object-fit:contain;border-radius:14px;transition:.35s}.expired .qrbox img{filter:blur(9px) grayscale(1);transform:scale(1.04)}.stamp{display:none;position:absolute;inset:0;align-items:center;justify-content:center;z-index:3}.expired .stamp{display:flex}.stamp span{border:7px solid #e52323;color:#e52323;font-size:29px;font-weight:1000;letter-spacing:2px;padding:10px 18px;transform:rotate(-14deg);border-radius:12px;background:rgba(255,255,255,.75)}.timer{text-align:center;font-size:20px;font-weight:900;margin:10px}.timer b{color:#ffd84a}.expired .timer b{color:#ff3b3b}.row{display:flex;gap:8px}.input{width:100%;border:1px solid rgba(255,255,255,.14);background:#0d1116;color:#fff;border-radius:14px;padding:14px;font-size:15px;outline:none}.btn{width:100%;border:0;border-radius:15px;padding:14px 16px;font-weight:900;font-size:15px;color:#fff;background:#171d24;margin-top:10px}.primary{background:#fff;color:#050608}.btn:active{transform:scale(.98)}.status{text-align:center;min-height:24px;margin-top:12px;font-weight:800}.small{font-size:11px;color:#8e98a3}.processing{display:none;text-align:center;padding:28px 8px}.processing.show{display:block}.loader{width:44px;height:44px;border:4px solid rgba(255,255,255,.16);border-top-color:#ffd84a;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 12px}@keyframes spin{to{transform:rotate(360deg)}}.ok{color:#42e28a}.bad{color:#ff5757}.hide{display:none!important}.sectionTitle{font-size:13px;font-weight:900;margin:16px 0 8px}
-</style></head><body><main class="wrap"><section class="card" id="card"><div class="brand">MAYAMUSIC â¤ï¸</div><div class="sub">SECURE PREMIUM PAYMENT</div><div id="main"><div class="amount" id="amount">â‚¹--</div><div class="meta" id="paymentId"></div><div class="qrbox"><img id="qr" alt="UPI QR"><div class="stamp"><span>EXPIRED</span></div></div><div class="timer" id="timer">QR valid for <b>05:00</b></div><div class="meta">UPI ID: <b id="upi">â€”</b></div><div class="sectionTitle">Optional Discount Code</div><div class="row"><input id="code" class="input" placeholder="Enter code or skip" maxlength="60"><button id="apply" class="btn" style="width:120px;margin-top:0">APPLY</button></div><div id="codeStatus" class="small"></div><div class="sectionTitle">Transaction / UTR ID</div><input id="utr" class="input" placeholder="Enter UTR / Transaction ID" maxlength="60"><button id="paid" class="btn primary">I PAID â€” SUBMIT UTR</button><div id="status" class="status"></div><div class="small" style="text-align:center;margin-top:12px">QR is unique to this payment session and expires after 5 minutes.</div></div><div id="processing" class="processing"><div class="loader"></div><div style="font-size:20px;font-weight:950;color:#ffd84a">Processing Payment</div><p class="small">Please wait up to 30 minutes for manual verification and Premium activation.</p><div class="ok">âœ“ Submission received</div></div></section></main><script src="https://telegram.org/js/telegram-web-app.js"></script><script>
-const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null;if(tg){tg.ready();tg.expand()}const paymentId=__PAYMENT_ID__,botUsername=__BOT_USERNAME__;let expired=false,th=null;const $=x=>document.getElementById(x);async function api(action,data={}){const body=new URLSearchParams({action,...data,initData:tg?tg.initData:''});const r=await fetch(location.pathname+'?action='+encodeURIComponent(action),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});return r.json()}function status(t,c){$('status').textContent=t;$('status').className='status '+(c||'')}function expire(){expired=true;$('card').classList.add('expired');$('timer').innerHTML='QR <b>EXPIRED</b>';$('paid').disabled=true;$('apply').disabled=true;$('utr').disabled=true;status('This QR has expired. Open PAY again for a new QR.','bad')}function timer(ex){clearInterval(th);function tick(){let left=Math.max(0,ex-Math.floor(Date.now()/1000));let m=String(Math.floor(left/60)).padStart(2,'0'),s=String(left%60).padStart(2,'0');$('timer').innerHTML='QR valid for <b>'+m+':'+s+'</b>';if(left<=0){clearInterval(th);expire()}}tick();th=setInterval(tick,1000)}function render(d){if(!d.ok){status(d.message||'Payment unavailable','bad');return}$('amount').textContent='â‚¹'+d.amount;$('paymentId').textContent=d.paymentId;$('upi').textContent=d.upiId;if(d.discountPercent)$('codeStatus').textContent=d.discountPercent+'% discount applied: '+d.discountCode;if(d.status==='expired'){expire();return}if(d.status==='pending'||d.status==='approved'){$('main').classList.add('hide');$('processing').classList.add('show');return}$('qr').src=d.qrUrl;timer(d.expiresAt)}$('apply').onclick=async()=>{if(expired)return;let code=$('code').value.trim();if(!code){$('codeStatus').textContent='Skipped â€” regular price applies.';return}$('apply').disabled=true;status('Applying discountâ€¦');try{let d=await api('apply_discount',{paymentId,code});if(d.ok){render(d);status('Discount applied.','ok')}else status(d.message||'Invalid code','bad')}catch(e){status('Network error','bad')}finally{$('apply').disabled=false}};$('paid').onclick=async()=>{if(expired)return;let utr=$('utr').value.trim();if(!utr){status('Enter UTR / Transaction ID first.','bad');return}$('paid').disabled=true;status('Submitting paymentâ€¦');try{let d=await api('submit_utr',{paymentId,utr});if(!d.ok){status(d.message||'Could not submit','bad');$('paid').disabled=false;return}$('main').classList.add('hide');$('processing').classList.add('show');setTimeout(()=>{let link='https://t.me/'+botUsername+'?start=payment_'+encodeURIComponent(paymentId);if(tg&&tg.openTelegramLink)tg.openTelegramLink(link);else location.href=link},5000)}catch(e){status('Network error','bad');$('paid').disabled=false}};(async()=>{try{render(await api('payment_info',{paymentId}))}catch(e){status('Unable to connect','bad')}})();
+</style></head><body><main class="wrap"><section class="card" id="card"><div class="brand">MAYAMUSIC ❤️</div><div class="sub">SECURE PREMIUM PAYMENT</div><div id="main"><div class="amount" id="amount">₹--</div><div class="meta" id="paymentId"></div><div class="qrbox"><img id="qr" alt="UPI QR"><div class="stamp"><span>EXPIRED</span></div></div><div class="timer" id="timer">QR valid for <b>05:00</b></div><div class="meta">UPI ID: <b id="upi">—</b></div><div class="sectionTitle">Optional Discount Code</div><div class="row"><input id="code" class="input" placeholder="Enter code or skip" maxlength="60"><button id="apply" class="btn" style="width:120px;margin-top:0">APPLY</button></div><div id="codeStatus" class="small"></div><div class="sectionTitle">Transaction / UTR ID</div><input id="utr" class="input" placeholder="Enter UTR / Transaction ID" maxlength="60"><button id="paid" class="btn primary">I PAID — SUBMIT UTR</button><div id="status" class="status"></div><div class="small" style="text-align:center;margin-top:12px">QR is unique to this payment session and expires after 5 minutes.</div></div><div id="processing" class="processing"><div class="loader"></div><div style="font-size:20px;font-weight:950;color:#ffd84a">Processing Payment</div><p class="small">Please wait up to 30 minutes for manual verification and Premium activation.</p><div class="ok">✓ Submission received</div></div></section></main><script src="https://telegram.org/js/telegram-web-app.js"></script><script>
+const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null;if(tg){tg.ready();tg.expand()}const paymentId=__PAYMENT_ID__,botUsername=__BOT_USERNAME__;let expired=false,th=null;const $=x=>document.getElementById(x);async function api(action,data={}){const body=new URLSearchParams({action,...data,initData:tg?tg.initData:''});const r=await fetch(location.pathname+'?action='+encodeURIComponent(action),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});return r.json()}function status(t,c){$('status').textContent=t;$('status').className='status '+(c||'')}function expire(){expired=true;$('card').classList.add('expired');$('timer').innerHTML='QR <b>EXPIRED</b>';$('paid').disabled=true;$('apply').disabled=true;$('utr').disabled=true;status('This QR has expired. Open PAY again for a new QR.','bad')}function timer(ex){clearInterval(th);function tick(){let left=Math.max(0,ex-Math.floor(Date.now()/1000));let m=String(Math.floor(left/60)).padStart(2,'0'),s=String(left%60).padStart(2,'0');$('timer').innerHTML='QR valid for <b>'+m+':'+s+'</b>';if(left<=0){clearInterval(th);expire()}}tick();th=setInterval(tick,1000)}function render(d){if(!d.ok){status(d.message||'Payment unavailable','bad');return}$('amount').textContent='₹'+d.amount;$('paymentId').textContent=d.paymentId;$('upi').textContent=d.upiId;if(d.discountPercent)$('codeStatus').textContent=d.discountPercent+'% discount applied: '+d.discountCode;if(d.status==='expired'){expire();return}if(d.status==='pending'||d.status==='approved'){$('main').classList.add('hide');$('processing').classList.add('show');return}$('qr').src=d.qrUrl;timer(d.expiresAt)}$('apply').onclick=async()=>{if(expired)return;let code=$('code').value.trim();if(!code){$('codeStatus').textContent='Skipped — regular price applies.';return}$('apply').disabled=true;status('Applying discount…');try{let d=await api('apply_discount',{paymentId,code});if(d.ok){render(d);status('Discount applied.','ok')}else status(d.message||'Invalid code','bad')}catch(e){status('Network error','bad')}finally{$('apply').disabled=false}};$('paid').onclick=async()=>{if(expired)return;let utr=$('utr').value.trim();if(!utr){status('Enter UTR / Transaction ID first.','bad');return}$('paid').disabled=true;status('Submitting payment…');try{let d=await api('submit_utr',{paymentId,utr});if(!d.ok){status(d.message||'Could not submit','bad');$('paid').disabled=false;return}$('main').classList.add('hide');$('processing').classList.add('show');setTimeout(()=>{let link='https://t.me/'+botUsername+'?start=payment_'+encodeURIComponent(paymentId);if(tg&&tg.openTelegramLink)tg.openTelegramLink(link);else location.href=link},5000)}catch(e){status('Network error','bad');$('paid').disabled=false}};(async()=>{try{render(await api('payment_info',{paymentId}))}catch(e){status('Unable to connect','bad')}})();
 </script></body></html>
 HTML;
     $html = str_replace(['__PAYMENT_ID__','__BOT_USERNAME__'], [$pid,$bot], $html);
@@ -5091,7 +5091,7 @@ function referralCenterPage(): void
 {
     secureHeaders();
     echo <<<'HTML'
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>MAYAMUSIC â€¢ Refer & Earn</title><style>*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -10%,#27313c 0,#090c10 48%,#050608 100%);color:#fff;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:520px;margin:auto;padding:calc(22px + env(safe-area-inset-top)) 18px calc(30px + env(safe-area-inset-bottom))}.card{background:rgba(18,22,27,.92);border:1px solid rgba(255,255,255,.12);border-radius:28px;padding:24px;box-shadow:0 20px 80px rgba(0,0,0,.45);backdrop-filter:blur(18px)}h1{text-align:center;font-size:25px;margin:0 0 6px;font-weight:950}.sub{text-align:center;color:#9da6b1;font-size:12px;margin-bottom:22px}.label{font-size:12px;color:#9da6b1;font-weight:800;margin-bottom:7px}.link{background:#0c1015;border:1px solid rgba(255,255,255,.12);border-radius:15px;padding:14px;word-break:break-all;font-size:13px;line-height:1.5}.btn{width:100%;border:0;border-radius:15px;padding:14px 16px;font-weight:900;font-size:15px;color:#fff;background:#171d24;margin-top:11px}.primary{background:#fff;color:#050608}.status{text-align:center;min-height:24px;margin-top:14px;font-weight:800}.ok{color:#42e28a}.bad{color:#ff5757}.small{font-size:11px;color:#8e98a3;text-align:center;margin-top:14px}</style></head><body><main class="wrap"><section class="card"><h1>ðŸŽ REFER & EARN</h1><div class="sub">Your activated personal referral center</div><div class="label">YOUR REFERRAL LINK</div><div class="link" id="link">Loading secure referral linkâ€¦</div><button class="btn primary" id="copy" disabled>ðŸ“‹ COPY LINK</button><button class="btn" id="share" disabled>ðŸ“¤ SHARE LINK</button><div class="status" id="status"></div><div class="small">Your link is available only after one-time activation and is locked to your Telegram user ID.</div></section></main><script src="https://telegram.org/js/telegram-web-app.js"></script><script>const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null;if(tg){tg.ready();tg.expand()}const $=id=>document.getElementById(id);async function load(){try{const body=new URLSearchParams({action:'referral_info',initData:tg?tg.initData:''});const r=await fetch(location.pathname+'?action=referral_info',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});const d=await r.json();if(!d.ok){$('link').textContent=d.message||'Referral not available.';$('status').textContent='Access denied';$('status').className='status bad';return}$('link').textContent=d.link;$('copy').disabled=false;$('share').disabled=false;$('copy').onclick=async()=>{try{await navigator.clipboard.writeText(d.link);$('status').textContent='âœ“ Link copied';$('status').className='status ok'}catch(e){$('status').textContent='Press and hold the link to copy it.'}};$('share').onclick=()=>{if(tg&&tg.openTelegramLink)tg.openTelegramLink(d.shareUrl);else location.href=d.shareUrl}}catch(e){$('status').textContent='Unable to load referral link.';$('status').className='status bad'}}load();</script></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>MAYAMUSIC • Refer & Earn</title><style>*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -10%,#27313c 0,#090c10 48%,#050608 100%);color:#fff;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:520px;margin:auto;padding:calc(22px + env(safe-area-inset-top)) 18px calc(30px + env(safe-area-inset-bottom))}.card{background:rgba(18,22,27,.92);border:1px solid rgba(255,255,255,.12);border-radius:28px;padding:24px;box-shadow:0 20px 80px rgba(0,0,0,.45);backdrop-filter:blur(18px)}h1{text-align:center;font-size:25px;margin:0 0 6px;font-weight:950}.sub{text-align:center;color:#9da6b1;font-size:12px;margin-bottom:22px}.label{font-size:12px;color:#9da6b1;font-weight:800;margin-bottom:7px}.link{background:#0c1015;border:1px solid rgba(255,255,255,.12);border-radius:15px;padding:14px;word-break:break-all;font-size:13px;line-height:1.5}.btn{width:100%;border:0;border-radius:15px;padding:14px 16px;font-weight:900;font-size:15px;color:#fff;background:#171d24;margin-top:11px}.primary{background:#fff;color:#050608}.status{text-align:center;min-height:24px;margin-top:14px;font-weight:800}.ok{color:#42e28a}.bad{color:#ff5757}.small{font-size:11px;color:#8e98a3;text-align:center;margin-top:14px}</style></head><body><main class="wrap"><section class="card"><h1>🎁 REFER & EARN</h1><div class="sub">Your activated personal referral center</div><div class="label">YOUR REFERRAL LINK</div><div class="link" id="link">Loading secure referral link…</div><button class="btn primary" id="copy" disabled>📋 COPY LINK</button><button class="btn" id="share" disabled>📤 SHARE LINK</button><div class="status" id="status"></div><div class="small">Your link is available only after one-time activation and is locked to your Telegram user ID.</div></section></main><script src="https://telegram.org/js/telegram-web-app.js"></script><script>const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null;if(tg){tg.ready();tg.expand()}const $=id=>document.getElementById(id);async function load(){try{const body=new URLSearchParams({action:'referral_info',initData:tg?tg.initData:''});const r=await fetch(location.pathname+'?action=referral_info',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});const d=await r.json();if(!d.ok){$('link').textContent=d.message||'Referral not available.';$('status').textContent='Access denied';$('status').className='status bad';return}$('link').textContent=d.link;$('copy').disabled=false;$('share').disabled=false;$('copy').onclick=async()=>{try{await navigator.clipboard.writeText(d.link);$('status').textContent='✓ Link copied';$('status').className='status ok'}catch(e){$('status').textContent='Press and hold the link to copy it.'}};$('share').onclick=()=>{if(tg&&tg.openTelegramLink)tg.openTelegramLink(d.shareUrl);else location.href=d.shareUrl}}catch(e){$('status').textContent='Unable to load referral link.';$('status').className='status bad'}}load();</script></body></html>
 HTML;
 }
 
@@ -5119,7 +5119,7 @@ function miniApi(): void
         $uid=(int)$auth['user_id'];
         if(!referralActivated($uid))jsonReply(['ok'=>false,'message'=>'Refer & Earn is not activated yet.']);
         $link=referralUrl($uid);
-        jsonReply(['ok'=>true,'userId'=>$uid,'link'=>$link,'shareUrl'=>'https://t.me/share/url?url='.rawurlencode($link).'&text='.rawurlencode('Join MAYAMUSIC using my referral link ðŸŽµ')]);
+        jsonReply(['ok'=>true,'userId'=>$uid,'link'=>$link,'shareUrl'=>'https://t.me/share/url?url='.rawurlencode($link).'&text='.rawurlencode('Join MAYAMUSIC using my referral link 🎵')]);
     }
 
     if($action==='lyrics'){
@@ -5165,7 +5165,7 @@ function miniApi(): void
         $uid=(int)$auth['user_id'];
         $r=claimRadhe($uid);
         if(!$r['ok']) jsonReply($r);
-        sendMsg($uid,'ðŸŒ¸ <b>à¤°à¤¾à¤§à¥‡ à¤°à¤¾à¤§à¥‡</b>\nYour 6-hour free music access is active until <b>'.fmtDate((int)$r['until']).'</b>.');
+        sendMsg($uid,'🌸 <b>राधे राधे</b>\nYour 6-hour free music access is active until <b>'.fmtDate((int)$r['until']).'</b>.');
         jsonReply(['ok'=>true,'until'=>fmtDate((int)$r['until'])]);
     }
 
@@ -5284,22 +5284,22 @@ function handleSuccessfulStarsPayment(array $message): void
         writeJson('payments', $payments);
 
         sendMsg($uid,
-            "<b>ðŸŸ¡ REFERRAL PAYMENT PROCESSING</b>\n\n" .
-            "â­ Telegram Stars received: <b>" . REFERRAL_STARS_PRICE . " Stars</b>\n" .
-            "â³ Your payment request has been sent to admin for approval.\n\n" .
+            "<b>🟡 REFERRAL PAYMENT PROCESSING</b>\n\n" .
+            "⭐ Telegram Stars received: <b>" . REFERRAL_STARS_PRICE . " Stars</b>\n" .
+            "⏳ Your payment request has been sent to admin for approval.\n\n" .
             "Please wait for manual verification. Your referral activation will be confirmed after admin approval."
         );
         sendMsg(ADMIN_ID,
-            "<b>â­ NEW REFERRAL STARS PAYMENT</b>\n\n" .
+            "<b>⭐ NEW REFERRAL STARS PAYMENT</b>\n\n" .
             "Payment: <code>" . esc($paymentId) . "</code>\n" .
             "User: <code>" . $uid . "</code>\n" .
-            "Amount: <b>â­ " . REFERRAL_STARS_PRICE . " Stars</b>\n" .
+            "Amount: <b>⭐ " . REFERRAL_STARS_PRICE . " Stars</b>\n" .
             "Status: <b>Awaiting admin approval</b>\n" .
             "Received: <b>" . fmtDate(now()) . "</b>",
             ['reply_markup'=>kb([[[
-                'text'=>'âœ… APPROVE', 'callback_data'=>'approve:'.$paymentId
+                'text'=>'✅ APPROVE', 'callback_data'=>'approve:'.$paymentId
             ],[
-                'text'=>'âŒ DECLINE', 'callback_data'=>'decline:'.$paymentId
+                'text'=>'❌ DECLINE', 'callback_data'=>'decline:'.$paymentId
             ]]])]
         );
         auditLog('referral_stars_submitted', $uid, ['payment'=>$paymentId,'amount'=>$amount]);
@@ -5319,11 +5319,11 @@ function handleSuccessfulStarsPayment(array $message): void
     $payments[$paymentId] = $payment;
     writeJson('payments', $payments);
     sendMsg($uid,
-        "<b>ðŸ’š PREMIUM ACTIVATED</b>\n\n" .
-        "â­ Telegram Stars payment received: <b>" . TELEGRAM_STARS_PRICE . " Stars</b>\n" .
-        "ðŸŽ§ Premium: <b>30 Days</b>\n\n" .
+        "<b>💚 PREMIUM ACTIVATED</b>\n\n" .
+        "⭐ Telegram Stars payment received: <b>" . TELEGRAM_STARS_PRICE . " Stars</b>\n" .
+        "🎧 Premium: <b>30 Days</b>\n\n" .
         "Valid until:\n<b>" . fmtDate($until) . "</b>\n\n" .
-        "âœ¨ Thank you for supporting MAYAMUSIC!"
+        "✨ Thank you for supporting MAYAMUSIC!"
     );
     auditLog('stars_payment_approved', $uid, ['payment'=>$paymentId]);
 }
