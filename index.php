@@ -18,7 +18,7 @@ IMPORTANT:
    CONFIGURATION
    ========================================================= */
 
-const BOT_TOKEN = 'PASTE_YOUR_NEW_BOT_TOKEN_HERE';
+const BOT_TOKEN = '8817347840:AAFpsNeTkzHqjnlqkV_18AjMEgIX-FXHmQo';
 
 const ADMIN_ID = 8897821078;
 
