@@ -65,7 +65,21 @@ declare(strict_types=1);
    CONFIG
    ============================================================ */
 
-const BOT_TOKEN = '8817347840:AAFpsNeTkzHqjnlqkV_18AjMEgIX-FXHmQo';
+/*
+ * QUICK SETUP (OPTION A - SIMPLE PHONE/FILE EDIT)
+ * ------------------------------------------------------------
+ * 1) Put your BotFather token in BOT_TOKEN below.
+ * 2) Keep TURNSTILE_SITE_KEY as the Cloudflare Site Key.
+ * 3) Put your Cloudflare Secret Key in TURNSTILE_SECRET.
+ * 4) Put any random 32+ character value in CRON_SECRET.
+ * 5) Save/upload this file and open ?health=1 to verify config.
+ *
+ * OPTION B - Railway Variables: BOT_TOKEN, TURNSTILE_SECRET,
+ * WEBAPP_URL and CRON_SECRET override these local values.
+ * NEVER share your real Bot Token or Cloudflare Secret Key.
+ */
+
+const BOT_TOKEN = '8817347840:AAFpsNeTkzHqjnlqkV_18AjMEgIX-FXHmQo'; // <-- PUT YOUR BOT TOKEN HERE if you are not using Railway Variables.
 const ADMIN_ID = 8897821078;
 
 const BOT_NAME = 'MAYAMUSIC';
@@ -102,8 +116,8 @@ const API_CONNECT_TIMEOUT = 8;
    supplied through environment variables on the server.
    ============================================================ */
 const TURNSTILE_SITE_KEY = '0x4AAAAAAFE73ZYt9-s7MVq8';
-const TURNSTILE_SECRET = '0x4AAAAAAFE75l1u_wLPxH2Z';
-const TELEGRAM_WEBHOOK_SECRET = 'https://hosting-production-aacd.up.railway.app';
+const TURNSTILE_SECRET = '0x4AAAAAAFE75l1u_wLPxH2Z'; // <-- PUT Cloudflare Secret Key here OR use Railway TURNSTILE_SECRET.
+const TELEGRAM_WEBHOOK_SECRET = ''; // Optional: set Railway TELEGRAM_WEBHOOK_SECRET.
 const CAPTCHA_TTL = 86400;
 const PLAYER_TTL = 86400;
 const SEARCH_TTL = 1800;
@@ -118,7 +132,7 @@ const RADHE_HOURS = 6;
 const REMINDER_INTERVAL = 1800;
 const REMINDER_MIN_IDLE = 1800;
 const SUNDAY_REWARD_HOURS = 24;
-const CRON_SECRET = 'MAYA-CRON-SzAroR_h79Sgad55dgcLxJex';
+const CRON_SECRET = 'PASTE_YOUR_CRON_SECRET_HERE'; // <-- PUT a random 32+ character secret here OR use Railway CRON_SECRET.
 const POLICY_VERSION = '1.0';
 
 
@@ -134,7 +148,12 @@ function configBotToken(): string
         return trim($env);
     }
 
-    return trim(BOT_TOKEN);
+    $local = trim(BOT_TOKEN);
+    if ($local === 'PASTE_YOUR_BOT_TOKEN_HERE') {
+        return '';
+    }
+
+    return $local;
 }
 
 function configWebAppUrl(): string
@@ -264,7 +283,16 @@ function jsonReply(array $data): void
 function envOrConst(string $envName, string $constantValue): string
 {
     $v = getenv($envName);
-    return ($v !== false && trim($v) !== '') ? trim($v) : trim($constantValue);
+    if ($v !== false && trim($v) !== '') {
+        return trim($v);
+    }
+
+    $value = trim($constantValue);
+    if (str_starts_with($value, 'PASTE_YOUR_') && str_ends_with($value, '_HERE')) {
+        return '';
+    }
+
+    return $value;
 }
 function turnstileSiteKey(): string { return envOrConst('TURNSTILE_SITE_KEY', TURNSTILE_SITE_KEY); }
 function turnstileSecret(): string { return envOrConst('TURNSTILE_SECRET', TURNSTILE_SECRET); }
@@ -331,22 +359,84 @@ function validateTelegramInitData(string $initData): ?array
 
 function validateTurnstileToken(string $token): bool
 {
-    if (!captchaEnabled() || $token==='' || strlen($token)>2048) return false;
-    $ch=curl_init('https://challenges.cloudflare.com/turnstile/v0/siteverify');
-    if($ch===false) return false;
-    curl_setopt_array($ch,[
-        CURLOPT_RETURNTRANSFER=>true,
-        CURLOPT_POST=>true,
-        CURLOPT_POSTFIELDS=>http_build_query([
-            'secret'=>turnstileSecret(),'response'=>$token,'remoteip'=>clientIp()
-        ]),
-        CURLOPT_HTTPHEADER=>['Content-Type: application/x-www-form-urlencoded'],
-        CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>10,
-        CURLOPT_USERAGENT=>'MAYAMUSIC/2.0'
+    if ($token === '' || strlen($token) > 2048) {
+        auditLog('captcha_invalid_token');
+        return false;
+    }
+
+    $secret = turnstileSecret();
+    if ($secret === '') {
+        auditLog('captcha_secret_missing');
+        return false;
+    }
+
+    $payload = http_build_query([
+        'secret' => $secret,
+        'response' => $token,
+        // Do not force a client IP through Telegram WebView/proxy layers.
     ]);
-    $body=curl_exec($ch); curl_close($ch);
-    $r=is_string($body)?json_decode($body,true):null;
-    return is_array($r) && ($r['success']??false)===true;
+
+    $body = false;
+
+    $ch = curl_init('https://challenges.cloudflare.com/turnstile/v0/siteverify');
+    if ($ch !== false) {
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/x-www-form-urlencoded',
+                'Accept: application/json'
+            ],
+            CURLOPT_CONNECTTIMEOUT => 8,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_USERAGENT => 'MAYAMUSIC/4.0'
+        ]);
+        $body = curl_exec($ch);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        if ($body === false) {
+            auditLog('captcha_http_error', 0, ['error' => substr($curlError, 0, 160)]);
+        }
+    }
+
+    if ($body === false || !is_string($body) || trim($body) === '') {
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => "Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n",
+                'content' => $payload,
+                'timeout' => 15,
+                'ignore_errors' => true
+            ]
+        ]);
+        $fallback = @file_get_contents(
+            'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+            false,
+            $context
+        );
+        if (is_string($fallback)) {
+            $body = $fallback;
+        }
+    }
+
+    $result = is_string($body) ? json_decode($body, true) : null;
+    if (!is_array($result)) {
+        auditLog('captcha_invalid_response');
+        return false;
+    }
+
+    if (($result['success'] ?? false) !== true) {
+        auditLog('captcha_rejected', 0, [
+            'error_codes' => array_slice((array)($result['error-codes'] ?? []), 0, 10),
+            'hostname' => (string)($result['hostname'] ?? '')
+        ]);
+        return false;
+    }
+
+    return true;
 }
 
 function userVerified(int $uid): bool
@@ -1405,6 +1495,13 @@ function sendPremium(int $uid): void
         "3. Admin payment verify karke Premium activate karega.",
         ['reply_markup'=>kb($buttons)]
     );
+
+    $qr = 'https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=' . rawurlencode($upi);
+    tg('sendPhoto', [
+        'chat_id' => $uid,
+        'photo' => $qr,
+        'caption' => '📲 MAYAMUSIC Premium UPI QR\nAmount: ₹' . MONTHLY_PRICE . '\nPayment ID: ' . $paymentId . '\nAfter payment submit your UTR.'
+    ]);
 }
 
 
@@ -3976,9 +4073,17 @@ function privacyPolicyPage(): void
 function verificationPage(): void
 {
     secureHeaders();
-    $site=htmlspecialchars(turnstileSiteKey(),ENT_QUOTES,'UTF-8');
     header('Content-Type: text/html; charset=UTF-8');
-    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script><title>MAYAMUSIC Security</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;padding:28px}.card{max-width:420px;margin:10vh auto;padding:24px;border-radius:24px;background:#151820;text-align:center}</style></head><body><div class="card"><h2>🛡 Security Verification</h2><p>Complete verification to continue.</p><div class="cf-turnstile" data-sitekey="'.$site.'" data-theme="dark" data-callback="verified"></div><p id="status">Waiting…</p></div><script>const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}async function verified(token){const fd=new FormData();fd.append("initData",tg?.initData||"");fd.append("token",token);document.getElementById("status").textContent="Verifying…";const r=await fetch(location.pathname+"?action=verify_turnstile",{method:"POST",body:fd});const d=await r.json();document.getElementById("status").textContent=d.ok?"✅ Verified. Return to the bot.":"❌ Verification failed. Retry.";}</script></body></html>';
+
+    $site = htmlspecialchars(turnstileSiteKey(), ENT_QUOTES, 'UTF-8');
+    $configured = captchaEnabled();
+
+    if (!$configured) {
+        echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAYAMUSIC Security</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;padding:28px}.card{max-width:460px;margin:10vh auto;padding:26px;border-radius:24px;background:#151820;text-align:center}code{background:#0b0d12;padding:4px 7px;border-radius:8px}</style></head><body><div class="card"><h2>🛡 Security Verification</h2><p>Cloudflare Turnstile is not fully configured on the server.</p><p><b>Missing:</b> <code>TURNSTILE_SECRET</code></p><p>Railway → Variables → add <code>TURNSTILE_SECRET</code> with your Cloudflare Secret Key, then redeploy.</p></div></body></html>';
+        exit;
+    }
+
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script><title>MAYAMUSIC Security</title><style>body{margin:0;background:#08090d;color:#fff;font-family:system-ui;padding:28px}.card{max-width:420px;margin:10vh auto;padding:24px;border-radius:24px;background:#151820;text-align:center;box-shadow:0 20px 70px rgba(0,0,0,.35)}.status{margin-top:18px;min-height:24px}.ok{color:#48df87}.bad{color:#ff6b6b}</style></head><body><div class="card"><h2>🛡 Security Verification</h2><p>Complete verification to continue.</p><div class="cf-turnstile" data-sitekey="'.$site.'" data-theme="dark" data-callback="verified" data-error-callback="captchaError" data-expired-callback="captchaExpired"></div><p id="status" class="status">Waiting…</p></div><script>const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}const s=document.getElementById("status");async function verified(token){const fd=new FormData();fd.append("initData",tg?.initData||"");fd.append("token",token);s.className="status";s.textContent="Verifying securely…";try{const r=await fetch(location.pathname+"?action=verify_turnstile",{method:"POST",body:fd,credentials:"same-origin"});const d=await r.json();if(d.ok){s.className="status ok";s.textContent="✅ Verified successfully. You can return to MAYAMUSIC.";try{tg?.HapticFeedback?.notificationOccurred("success");}catch(e){}}else{s.className="status bad";s.textContent="❌ Backend verification failed. Check TURNSTILE_SECRET in Railway and redeploy.";}}catch(e){s.className="status bad";s.textContent="❌ Server connection failed. Please retry.";}}function captchaError(){s.className="status bad";s.textContent="❌ Cloudflare widget error. Check the Turnstile hostname/site key.";}function captchaExpired(){s.className="status bad";s.textContent="⚠️ Verification expired. Complete it again.";}</script></body></html>';
     exit;
 }
 
@@ -5137,22 +5242,13 @@ function healthPage(): void
 
     echo
         "MAYAMUSIC ONLINE\n" .
-        "PHP: " .
-        PHP_VERSION .
-        "\n" .
-        "Bot token: " .
-        (
-            configBotToken() !== ''
-                ? 'configured'
-                : 'missing'
-        ) .
-        "\n" .
-        "WebApp: " .
-        configWebAppUrl() .
-        "\n" .
-        "Time: " .
-        date('c') .
-        "\n";
+        "PHP: " . PHP_VERSION . "\n" .
+        "Bot token: " . (configBotToken() !== '' ? 'configured' : 'MISSING') . "\n" .
+        "WebApp: " . configWebAppUrl() . "\n" .
+        "Turnstile site key: " . (turnstileSiteKey() !== '' ? 'configured' : 'MISSING') . "\n" .
+        "Turnstile secret: " . (turnstileSecret() !== '' ? 'configured' : 'MISSING') . "\n" .
+        "Cron secret: " . (envOrConst('CRON_SECRET', CRON_SECRET) !== '' ? 'configured' : 'MISSING') . "\n" .
+        "Time: " . date('c') . "\n";
 }
 
 
