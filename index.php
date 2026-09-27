@@ -210,6 +210,67 @@ function writeJson(string $name, array $data): bool
 
 
 /* ============================================================
+   RATE LIMIT + AUDIT LOG
+   ============================================================ */
+
+function rateLimit(string $name, int $max, int $window, int $uid = 0): bool
+{
+    $max = max(1, $max);
+    $window = max(1, $window);
+    $uid = (int)$uid;
+    $key = $name . ':' . $uid;
+    $data = readJson('ratelimits');
+    $now = now();
+    $hits = $data[$key] ?? [];
+    if (!is_array($hits)) $hits = [];
+
+    $fresh = [];
+    foreach ($hits as $ts) {
+        $ts = (int)$ts;
+        if ($ts > ($now - $window)) $fresh[] = $ts;
+    }
+
+    if (count($fresh) >= $max) {
+        $data[$key] = array_slice($fresh, -$max);
+        writeJson('ratelimits', $data);
+        return false;
+    }
+
+    $fresh[] = $now;
+    $data[$key] = $fresh;
+
+    // Keep the JSON store bounded.
+    if (count($data) > 5000) {
+        $cutoff = $now - max($window, 3600);
+        foreach ($data as $k => $list) {
+            if (!is_array($list)) { unset($data[$k]); continue; }
+            $list = array_values(array_filter($list, static fn($t) => (int)$t > $cutoff));
+            if ($list) $data[$k] = $list; else unset($data[$k]);
+        }
+    }
+
+    writeJson('ratelimits', $data);
+    return true;
+}
+
+function auditLog(string $event, int $uid = 0, array $meta = []): void
+{
+    $row = [
+        'time' => now(),
+        'event' => substr($event, 0, 80),
+        'user_id' => $uid,
+        'meta' => $meta,
+    ];
+
+    $path = filePath('audit');
+    $line = json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($line !== false) {
+        @file_put_contents($path, $line . PHP_EOL, FILE_APPEND | LOCK_EX);
+    }
+}
+
+
+/* ============================================================
    HELPERS
    ============================================================ */
 
@@ -398,7 +459,7 @@ function answerCb(
         [
             'callback_query_id' => $id,
             'text' => $text,
-            'show_alert' => $alert ? 'true' : 'false'
+            'show_alert' => $alert
         ]
     );
 }
@@ -3378,6 +3439,12 @@ function handleCallback(
             ?? ''
         );
 
+    // Always acknowledge a callback quickly so Telegram does not keep the button spinner active.
+    if ($id === '' || $uid <= 0) {
+        if ($id !== '') answerCb($id, 'Invalid callback', true);
+        return;
+    }
+
     if(!rateLimit('callback',120,60,$uid)){
         answerCb($id,'Too many requests',true);
         return;
@@ -4961,8 +5028,54 @@ renderQueue();
 
 
 /* ============================================================
-   MINI APP API
+   TELEGRAM MINI APP INIT DATA VALIDATION
    ============================================================ */
+
+function validateTelegramInitData(string $initData): ?array
+{
+    if ($initData === '' || strlen($initData) > 10000) return null;
+
+    parse_str($initData, $params);
+    if (!is_array($params)) return null;
+
+    $hash = (string)($params['hash'] ?? '');
+    if ($hash === '' || !preg_match('/^[a-f0-9]{64}$/i', $hash)) return null;
+    unset($params['hash']);
+
+    ksort($params);
+    $check = [];
+    foreach ($params as $key => $value) {
+        if (is_array($value)) $value = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $check[] = $key . '=' . (string)$value;
+    }
+    $dataCheckString = implode("\n", $check);
+
+    $token = configBotToken();
+    if ($token === '') return null;
+
+    $secretKey = hash_hmac('sha256', $token, 'WebAppData', true);
+    $calculated = hash_hmac('sha256', $dataCheckString, $secretKey);
+    if (!hash_equals(strtolower($hash), strtolower($calculated))) return null;
+
+    $userJson = (string)($params['user'] ?? '');
+    $user = json_decode($userJson, true);
+    if (!is_array($user) || (int)($user['id'] ?? 0) <= 0) return null;
+
+    // Telegram initData includes auth_date. Reject stale sessions.
+    $authDate = (int)($params['auth_date'] ?? 0);
+    if ($authDate <= 0 || abs(now() - $authDate) > 86400) return null;
+
+    return [
+        'user_id' => (int)$user['id'],
+        'user' => $user,
+        'auth_date' => $authDate,
+    ];
+}
+
+
+/* ============================================================
+   MINI APP API
+   ============================================================
 
 function miniApi(): void
 {
