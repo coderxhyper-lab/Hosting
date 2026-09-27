@@ -103,7 +103,7 @@ const API_CONNECT_TIMEOUT = 8;
    ============================================================ */
 const TURNSTILE_SITE_KEY = '0x4AAAAAAFE73ZYt9-s7MVq8';
 const TURNSTILE_SECRET = '0x4AAAAAAFE75l1u_wLPxH2Z';
-const TELEGRAM_WEBHOOK_SECRET = '';
+const TELEGRAM_WEBHOOK_SECRET = 'https://hosting-production-aacd.up.railway.app';
 const CAPTCHA_TTL = 86400;
 const PLAYER_TTL = 86400;
 const SEARCH_TTL = 1800;
