@@ -123,7 +123,8 @@ const RATE_WINDOW = 60;
 const RATE_LIMIT_SEARCH = 30;
 const RATE_LIMIT_API = 60;
 const RATE_LIMIT_REDEEM = 10;
-const REFERRAL_PRICE = 2;
+const REFERRAL_PRICE = 10;
+const REFERRAL_STARS_PRICE = 2;
 const REFERRAL_REWARD_DAYS = 3;
 const REFERRAL_BATCH = 5;
 const RADHE_HOURS = 6;
@@ -681,8 +682,27 @@ function runAutomaticMaintenance(): void
 function referralPayment(int $uid): string
 {
     $payments=readJson('payments');
-    $id='REF-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(3)));
-    $payments[$id]=['id'=>$id,'user_id'=>$uid,'amount'=>REFERRAL_PRICE,'type'=>'referral','status'=>'created','utr'=>'','created_at'=>now(),'utr_submitted_at'=>0,'approved_at'=>0,'expires_at'=>now()+86400,'gateway'=>'manual_upi','gateway_status'=>'manual','payment_id'=>''];
+    do {
+        $id='REF-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));
+    } while (isset($payments[$id]));
+    $payments[$id]=[
+        'id'=>$id,
+        'user_id'=>$uid,
+        'method'=>'upi',
+        'type'=>'referral',
+        'gateway'=>'manual_upi',
+        'amount'=>REFERRAL_PRICE,
+        'base_amount'=>REFERRAL_PRICE,
+        'currency'=>'INR',
+        'status'=>'created',
+        'utr'=>'',
+        'created_at'=>now(),
+        'utr_submitted_at'=>0,
+        'approved_at'=>0,
+        'expires_at'=>now()+UPI_PAYMENT_TTL,
+        'qr_ref'=>'REF'.strtoupper(bin2hex(random_bytes(8))),
+        'payment_id'=>$id
+    ];
     writeJson('payments',$payments);
     return $id;
 }
@@ -690,17 +710,70 @@ function referralPayment(int $uid): string
 function referralPageText(int $uid): string
 {
     $u=userRecord($uid); $n=(int)($u['referral_count']??0); $next=REFERRAL_BATCH-($n%REFERRAL_BATCH); if($next===REFERRAL_BATCH)$next=0;
-    return "<b>🎁 REFER & EARN</b>\n\nYour confirmed referrals: <b>$n</b>\n" . ($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.") . "\n\n<b>Your personal referral link:</b>\n<code>".esc(referralUrl($uid))."</code>\n\nA referral is counted only after the invited user opens the bot through your unique link and completes the ₹".REFERRAL_PRICE." referral activation payment. Manual UTR verification prevents fake referrals.";
+    return "<b>🎁 REFER & EARN</b>\n\nYour confirmed referrals: <b>$n</b>\n" . ($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.") . "\n\n<b>Your personal referral link:</b>\n<code>".esc(referralUrl($uid))."</code>\n\nA referral is counted only after the invited user opens the bot through your unique link and completes the ₹".REFERRAL_PRICE." or ⭐ ".REFERRAL_STARS_PRICE." Stars activation payment. Payment requests are sent to admin for approval.";
+}
+
+function createReferralStarsInvoice(int $uid): void
+{
+    if(!rateLimit('referral_stars_invoice',5,60,$uid)){
+        sendMsg($uid,'⏳ Please wait before opening another referral Stars payment.');
+        return;
+    }
+    $payments=readJson('payments');
+    do {
+        $paymentId='REFSTAR-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));
+    } while(isset($payments[$paymentId]));
+    $payload='MAYA_REF_STARS|'.$paymentId.'|'.$uid;
+    $payments[$paymentId]=[
+        'id'=>$paymentId,
+        'user_id'=>$uid,
+        'method'=>'stars',
+        'type'=>'referral',
+        'gateway'=>'telegram_stars',
+        'amount'=>REFERRAL_STARS_PRICE,
+        'currency'=>'XTR',
+        'status'=>'stars_created',
+        'created_at'=>now(),
+        'approved_at'=>0,
+        'expires_at'=>0,
+        'stars_charge_id'=>'',
+        'payment_id'=>$paymentId,
+        'invoice_payload'=>$payload
+    ];
+    writeJson('payments',$payments);
+    $r=tg('sendInvoice',[
+        'chat_id'=>$uid,
+        'title'=>'MAYAMUSIC Refer & Earn',
+        'description'=>'Referral activation — admin approval required',
+        'payload'=>$payload,
+        'currency'=>'XTR',
+        'prices'=>json_encode([['label'=>'Referral Activation','amount'=>REFERRAL_STARS_PRICE]],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),
+        'start_parameter'=>'maya-referral-stars'
+    ]);
+    if(!($r['ok']??false)){
+        $ps=readJson('payments');
+        if(isset($ps[$paymentId])){
+            $ps[$paymentId]['status']='invoice_failed';
+            $ps[$paymentId]['error']=(string)($r['description']??'Invoice failed');
+            writeJson('payments',$ps);
+        }
+        sendMsg($uid,'❌ Telegram Stars payment could not be opened. Please try UPI.');
+    }
 }
 
 function sendReferral(int $uid): void
 {
     if (!requireVerification($uid)) return;
     $pid=referralPayment($uid);
-    $upi='upi://pay?pa='.rawurlencode(UPI_ID).'&pn='.rawurlencode(UPI_NAME).'&am='.number_format(REFERRAL_PRICE,2,'.','').'&cu=INR&tn='.rawurlencode('MAYA REF '.$pid);
-    $qr='https://api.qrserver.com/v1/create-qr-code/?size=320x320&data='.rawurlencode($upi);
-    sendMsg($uid,referralPageText($uid)."\n\n<b>Referral activation</b>\nPay ₹".REFERRAL_PRICE." by UPI, then submit UTR:\n<code>/utr $pid YOUR_UTR</code>",['reply_markup'=>kb([[['text'=>'📲 Pay ₹2','url'=>$upi]],[['text'=>'🧾 Submit ₹2 UTR','callback_data'=>'utr:'.$pid]]])]);
-    tg('sendPhoto',['chat_id'=>$uid,'photo'=>$qr,'caption'=>'📲 Scan this UPI QR to pay ₹2 for referral activation. Then submit the UTR.']);
+    $url=configWebAppUrl().'?pay='.rawurlencode($pid);
+    sendMsg($uid,
+        referralPageText($uid)."\n\n<b>Choose activation method:</b>\n💳 <b>₹".REFERRAL_PRICE." UPI</b> — secure 5-minute payment QR\n⭐ <b>".REFERRAL_STARS_PRICE." Telegram Stars</b> — Telegram checkout",
+        ['reply_markup'=>kb([
+            [['text'=>'💳 PAY ₹'.REFERRAL_PRICE.' • UPI','web_app'=>['url'=>$url]]],
+            [['text'=>'⭐ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],
+            [['text'=>'⬅️ Home','callback_data'=>'home']]
+        ])]
+    );
 }
 
 function bindReferralFromStart(int $uid, string $args): void
@@ -1694,8 +1767,7 @@ function processPaymentDecision(
         $payments[$paymentId];
 
     if (
-        ($payment['status'] ?? '')
-        !== 'pending'
+        !in_array(($payment['status'] ?? ''), ['pending','referral_stars_pending_admin'], true)
     ) {
         sendMsg(
             $adminId,
@@ -1726,7 +1798,7 @@ function processPaymentDecision(
 
         if ($isReferral) {
             finalizeReferral($uid, $paymentId);
-            sendMsg($uid,"✅ <b>₹2 referral activation verified.</b>\n\nYour referral has been confirmed. The inviter receives the referral credit after verification.");
+            sendMsg($uid,"✅ <b>Referral activation verified.</b>\n\nYour ₹".REFERRAL_PRICE." UPI / ⭐ ".REFERRAL_STARS_PRICE." Stars payment has been approved. The referral has been confirmed. The inviter receives the referral credit after verification.");
             sendMsg($adminId,"✅ Referral payment approved.\nUser: <code>".$uid."</code>\nPayment: <code>".esc($paymentId)."</code>");
         } else {
             sendMsg($uid,"✅ <b>Payment Approved</b>\n\n⭐ Premium activated.\n\nValid until:\n<b>".fmtDate($until)."</b>");
@@ -3688,6 +3760,12 @@ function handleCallback(
         return;
     }
 
+    if ($data === 'referral_stars_pay') {
+        answerCb($id, 'Opening Telegram Stars…');
+        createReferralStarsInvoice($uid);
+        return;
+    }
+
     if ($data === 'stars_pay') {
         answerCb($id, 'Opening Telegram Stars…');
         createStarsInvoice($uid);
@@ -4923,7 +5001,7 @@ function paymentForUser(string $id,int $uid): ?array { if($id===''||strlen($id)>
 function paymentInfoForMiniApp(string $id,int $uid): array {
     $p=paymentForUser($id,$uid); if($p===null)return ['ok'=>false,'error'=>'payment_not_found','message'=>'Payment session not found.'];
     $status=(string)($p['status']??'created'); $expired=(int)($p['expires_at']??0)>0&&(int)$p['expires_at']<=now()&&$status==='created'; if($expired)$status='expired';
-    return ['ok'=>true,'paymentId'=>(string)$p['id'],'amount'=>(int)$p['amount'],'baseAmount'=>(int)($p['base_amount']??MONTHLY_PRICE),'discountCode'=>(string)($p['discount_code']??''),'discountPercent'=>(int)($p['discount_percent']??0),'status'=>$status,'expiresAt'=>(int)($p['expires_at']??0),'qrUrl'=>$status==='created'?buildQrUrl($p):'','upiId'=>UPI_ID,'upiName'=>UPI_NAME];
+    return ['ok'=>true,'paymentId'=>(string)$p['id'],'amount'=>(int)$p['amount'],'baseAmount'=>(int)($p['base_amount']??(($p['type']??'')==='referral'?REFERRAL_PRICE:MONTHLY_PRICE)),'discountCode'=>(string)($p['discount_code']??''),'discountPercent'=>(int)($p['discount_percent']??0),'status'=>$status,'expiresAt'=>(int)($p['expires_at']??0),'qrUrl'=>$status==='created'?buildQrUrl($p):'','upiId'=>UPI_ID,'upiName'=>UPI_NAME];
 }
 function applyPaymentDiscount(int $uid,string $id,string $raw): array {
     $code=strtoupper(trim($raw)); if($code===''||strlen($code)>60)return ['ok'=>false,'message'=>'Enter a valid discount code.'];
@@ -4941,7 +5019,7 @@ function submitMiniPaymentUtr(int $uid,string $id,string $utr): array {
     $dc=(string)($p['discount_code']??''); if($dc!==''&&!empty($p['discount_consumed'])){} elseif($dc!==''){ $codes=readJson('discounts'); if(isset($codes[$dc])){$codes[$dc]['uses']=(int)($codes[$dc]['uses']??0)+1;writeJson('discounts',$codes);} $p['discount_consumed']=1; }
     $ps[$id]=$p; writeJson('payments',$ps); $amt=(int)$p['amount']; $dt=$dc!==''?"\nDiscount: <b>".(int)$p['discount_percent']."% OFF</b> (<code>".esc($dc)."</code>)":'';
     sendMsg($uid,"<b>🟡 PROCESSING PAYMENT</b>\n\nUTR submitted successfully.\nAmount: <b>₹".$amt."</b>\nUTR: <code>".esc($utr)."</code>".$dt."\n\n<b>⏳ Please wait up to 30 minutes.</b>\nYour payment will be manually verified and Premium will activate after admin approval.\n\n💚 Thank you for using MAYAMUSIC.");
-    sendMsg(ADMIN_ID,"<b>💳 NEW PREMIUM PAYMENT</b>\n\nPayment: <code>".esc($id)."</code>\nUser: <code>".$uid."</code>\nAmount: <b>₹".$amt."</b>".$dt."\nUTR: <code>".esc($utr)."</code>\nSubmitted: <b>".fmtDate(now())."</b>",['reply_markup'=>kb([[['text'=>'✅ APPROVE','callback_data'=>'approve:'.$id],['text'=>'❌ DECLINE','callback_data'=>'decline:'.$id]]])]);
+    sendMsg(ADMIN_ID,"<b>💳 NEW ".(($p['type']??'')==='referral'?'REFERRAL':'PREMIUM')." PAYMENT</b>\n\nPayment: <code>".esc($id)."</code>\nUser: <code>".$uid."</code>\nAmount: <b>₹".$amt."</b>".$dt."\nUTR: <code>".esc($utr)."</code>\nSubmitted: <b>".fmtDate(now())."</b>",['reply_markup'=>kb([[['text'=>'✅ APPROVE','callback_data'=>'approve:'.$id],['text'=>'❌ DECLINE','callback_data'=>'decline:'.$id]]])]);
     auditLog('upi_payment_submitted',$uid,['payment'=>$id,'amount'=>$amt]); return ['ok'=>true,'paymentId'=>$id,'status'=>'pending'];
 }
 
@@ -5100,13 +5178,21 @@ function handleSuccessfulStarsPayment(array $message): void
     $charge = (string)($sp['telegram_payment_charge_id'] ?? '');
     $amount = (int)($sp['total_amount'] ?? 0);
 
-    if ($uid <= 0 || $charge === '' || !preg_match('/^MAYA_STARS\|([^|]+)\|(\d+)$/', $payload, $m)) {
+    if ($uid <= 0 || $charge === '') {
         auditLog('invalid_stars_payment', $uid);
         return;
     }
 
-    $paymentId = $m[1];
-    $payloadUid = (int)$m[2];
+    $isPremium = preg_match('/^MAYA_STARS\|([^|]+)\|(\d+)$/', $payload, $m);
+    $isReferral = preg_match('/^MAYA_REF_STARS\|([^|]+)\|(\d+)$/', $payload, $r);
+    if (!$isPremium && !$isReferral) {
+        auditLog('invalid_stars_payment', $uid);
+        return;
+    }
+
+    $paymentId = $isReferral ? $r[1] : $m[1];
+    $payloadUid = (int)($isReferral ? $r[2] : $m[2]);
+    $expectedAmount = $isReferral ? REFERRAL_STARS_PRICE : TELEGRAM_STARS_PRICE;
     $payments = readJson('payments');
     $payment = $payments[$paymentId] ?? null;
 
@@ -5114,25 +5200,51 @@ function handleSuccessfulStarsPayment(array $message): void
         auditLog('stars_payment_owner_mismatch', $uid, ['payment'=>$paymentId]);
         return;
     }
-
-    if ($amount !== TELEGRAM_STARS_PRICE) {
-        auditLog('stars_payment_wrong_amount', $uid, ['amount'=>$amount]);
+    if ($amount !== $expectedAmount || (string)($sp['currency'] ?? 'XTR') !== 'XTR') {
+        auditLog('stars_payment_wrong_amount', $uid, ['payment'=>$paymentId,'amount'=>$amount]);
         return;
     }
-
-    if (($payment['status'] ?? '') === 'approved' && ($payment['stars_charge_id'] ?? '') === $charge) {
-        return;
-    }
-
-    // Prevent the same Telegram Stars charge from being credited twice.
     foreach ($payments as $existing) {
         if (($existing['stars_charge_id'] ?? '') === $charge) return;
     }
 
+    if ($isReferral) {
+        if (($payment['status'] ?? '') !== 'stars_created') return;
+        $payment['status'] = 'referral_stars_pending_admin';
+        $payment['stars_charge_id'] = $charge;
+        $payment['paid_at'] = now();
+        $payment['amount'] = REFERRAL_STARS_PRICE;
+        $payment['currency'] = 'XTR';
+        $payments[$paymentId] = $payment;
+        writeJson('payments', $payments);
+
+        sendMsg($uid,
+            "<b>🟡 REFERRAL PAYMENT PROCESSING</b>\n\n" .
+            "⭐ Telegram Stars received: <b>" . REFERRAL_STARS_PRICE . " Stars</b>\n" .
+            "⏳ Your payment request has been sent to admin for approval.\n\n" .
+            "Please wait for manual verification. Your referral activation will be confirmed after admin approval."
+        );
+        sendMsg(ADMIN_ID,
+            "<b>⭐ NEW REFERRAL STARS PAYMENT</b>\n\n" .
+            "Payment: <code>" . esc($paymentId) . "</code>\n" .
+            "User: <code>" . $uid . "</code>\n" .
+            "Amount: <b>⭐ " . REFERRAL_STARS_PRICE . " Stars</b>\n" .
+            "Status: <b>Awaiting admin approval</b>\n" .
+            "Received: <b>" . fmtDate(now()) . "</b>",
+            ['reply_markup'=>kb([[[
+                'text'=>'✅ APPROVE', 'callback_data'=>'approve:'.$paymentId
+            ],[
+                'text'=>'❌ DECLINE', 'callback_data'=>'decline:'.$paymentId
+            ]]])]
+        );
+        auditLog('referral_stars_submitted', $uid, ['payment'=>$paymentId,'amount'=>$amount]);
+        return;
+    }
+
+    if (($payment['status'] ?? '') !== 'stars_created') return;
     $base = max(now(), premiumUntil($uid));
     $until = $base + (ACCESS_DAYS * 86400);
     updateUser($uid, ['premium_until'=>$until]);
-
     $payment['status'] = 'approved';
     $payment['approved_at'] = now();
     $payment['expires_at'] = $until;
@@ -5141,7 +5253,6 @@ function handleSuccessfulStarsPayment(array $message): void
     $payment['currency'] = 'XTR';
     $payments[$paymentId] = $payment;
     writeJson('payments', $payments);
-
     sendMsg($uid,
         "<b>💚 PREMIUM ACTIVATED</b>\n\n" .
         "⭐ Telegram Stars payment received: <b>" . TELEGRAM_STARS_PRICE . " Stars</b>\n" .
@@ -5151,7 +5262,6 @@ function handleSuccessfulStarsPayment(array $message): void
     );
     auditLog('stars_payment_approved', $uid, ['payment'=>$paymentId]);
 }
-
 /* ============================================================
    TELEGRAM WEBHOOK UPDATE
    ============================================================ */
@@ -5231,12 +5341,15 @@ function processWebhook(): void
         $fromId = (int)($query['from']['id'] ?? 0);
         $ok = false;
         $error = 'Payment session invalid or expired.';
-        if (preg_match('/^MAYA_STARS\|([^|]+)\|(\d+)$/', $payload, $m)) {
-            $paymentId = $m[1];
-            $payloadUid = (int)$m[2];
+        $isPremium = preg_match('/^MAYA_STARS\|([^|]+)\|(\d+)$/', $payload, $m);
+        $isReferral = preg_match('/^MAYA_REF_STARS\|([^|]+)\|(\d+)$/', $payload, $r);
+        if ($isPremium || $isReferral) {
+            $paymentId = $isReferral ? $r[1] : $m[1];
+            $payloadUid = (int)($isReferral ? $r[2] : $m[2]);
+            $expectedAmount = $isReferral ? REFERRAL_STARS_PRICE : TELEGRAM_STARS_PRICE;
             $payments = readJson('payments');
             $payment = $payments[$paymentId] ?? null;
-            if (is_array($payment) && (int)($payment['user_id'] ?? 0) === $fromId && $payloadUid === $fromId && ($payment['status'] ?? '') === 'stars_created' && (string)($query['currency'] ?? '') === 'XTR' && (int)($query['total_amount'] ?? 0) === TELEGRAM_STARS_PRICE) {
+            if (is_array($payment) && (int)($payment['user_id'] ?? 0) === $fromId && $payloadUid === $fromId && ($payment['status'] ?? '') === 'stars_created' && (string)($query['currency'] ?? '') === 'XTR' && (int)($query['total_amount'] ?? 0) === $expectedAmount) {
                 $ok = true;
                 $error = '';
             }
