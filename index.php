@@ -505,6 +505,9 @@ function userRecord(int $uid): array
             'referred_by' => '',
             'referral_count' => 0,
             'referral_rewarded' => 0,
+            'referral_activated' => false,
+            'referral_activation_payment_id' => '',
+            'referral_activated_at' => 0,
             'active_days' => [],
             'last_reminder_at' => 0,
             'last_start_at' => 0,
@@ -549,6 +552,26 @@ function updateUser(
     return $user;
 }
 
+
+function createDiscountCode(int $percent, int $creatorUid, int $days = 30, int $maxUses = 100): string
+{
+    $percent=max(1,min(MAX_DISCOUNT_PERCENT,$percent));
+    $days=max(1,min(365,$days));
+    $maxUses=max(1,min(100000,$maxUses));
+    $codes=readJson('discounts');
+    do {$code='MAYA'.strtoupper(substr(bin2hex(random_bytes(6)),0,10));} while(isset($codes[$code]));
+    $codes[$code]=['code'=>$code,'percent'=>$percent,'created_by'=>$creatorUid,'created_at'=>now(),'expires_at'=>now()+($days*86400),'max_uses'=>$maxUses,'uses'=>0,'status'=>'active'];
+    if(!writeJson('discounts',$codes)) throw new RuntimeException('Unable to save discount code.');
+    auditLog('discount_created',$creatorUid,['code'=>$code,'percent'=>$percent,'days'=>$days,'max_uses'=>$maxUses]);
+    return $code;
+}
+function referralActivated(int $uid): bool { return (userRecord($uid)['referral_activated']??false)===true; }
+function existingReferralPayment(int $uid): ?array {
+    foreach(readJson('payments') as $payment){
+        if(is_array($payment)&&($payment['type']??'')==='referral'&&(int)($payment['user_id']??0)===$uid) return $payment;
+    }
+    return null;
+}
 
 function ensureRefCode(int $uid): string
 {
@@ -681,120 +704,89 @@ function runAutomaticMaintenance(): void
 
 function referralPayment(int $uid): string
 {
+    $existing=existingReferralPayment($uid);
+    if(is_array($existing)&&!empty($existing['id'])){
+        $id=(string)$existing['id']; updateUser($uid,['referral_activation_payment_id'=>$id]); return $id;
+    }
     $payments=readJson('payments');
-    do {
-        $id='REF-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));
-    } while (isset($payments[$id]));
-    $payments[$id]=[
-        'id'=>$id,
-        'user_id'=>$uid,
-        'method'=>'upi',
-        'type'=>'referral',
-        'gateway'=>'manual_upi',
-        'amount'=>REFERRAL_PRICE,
-        'base_amount'=>REFERRAL_PRICE,
-        'currency'=>'INR',
-        'status'=>'created',
-        'utr'=>'',
-        'created_at'=>now(),
-        'utr_submitted_at'=>0,
-        'approved_at'=>0,
-        'expires_at'=>now()+UPI_PAYMENT_TTL,
-        'qr_ref'=>'REF'.strtoupper(bin2hex(random_bytes(8))),
-        'payment_id'=>$id
-    ];
-    writeJson('payments',$payments);
+    do{$id='REF-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));}while(isset($payments[$id]));
+    $payments[$id]=['id'=>$id,'user_id'=>$uid,'method'=>'upi','type'=>'referral','gateway'=>'manual_upi','amount'=>REFERRAL_PRICE,'base_amount'=>REFERRAL_PRICE,'currency'=>'INR','status'=>'created','utr'=>'','created_at'=>now(),'utr_submitted_at'=>0,'approved_at'=>0,'expires_at'=>now()+UPI_PAYMENT_TTL,'qr_ref'=>'REF'.strtoupper(bin2hex(random_bytes(8))),'payment_id'=>$id,'activation_locked'=>true];
+    if(!writeJson('payments',$payments)) throw new RuntimeException('Unable to create referral payment.');
+    updateUser($uid,['referral_activation_payment_id'=>$id]);
     return $id;
 }
 
 function referralPageText(int $uid): string
 {
     $u=userRecord($uid); $n=(int)($u['referral_count']??0); $next=REFERRAL_BATCH-($n%REFERRAL_BATCH); if($next===REFERRAL_BATCH)$next=0;
-    return "<b>🎁 REFER & EARN</b>\n\nYour confirmed referrals: <b>$n</b>\n" . ($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.") . "\n\n<b>Your personal referral link:</b>\n<code>".esc(referralUrl($uid))."</code>\n\nA referral is counted only after the invited user opens the bot through your unique link and completes the ₹".REFERRAL_PRICE." or ⭐ ".REFERRAL_STARS_PRICE." Stars activation payment. Payment requests are sent to admin for approval.";
+    if(referralActivated($uid)) return "<b>🎁 REFER & EARN</b>\n\nStatus: <b>🟢 ACTIVATED</b>\nConfirmed referrals: <b>$n</b>\n".($next?"Next reward in <b>$next</b> confirmed referral(s).":"🎉 Reward batch completed.");
+    return "<b>🎁 REFER & EARN</b>\n\nStatus: <b>🔒 NOT ACTIVATED</b>\n\nRefer & Earn activation requires a one-time payment:\n💳 <b>₹".REFERRAL_PRICE." UPI</b> or ⭐ <b>".REFERRAL_STARS_PRICE." Telegram Stars</b>\n\nYour referral link will be shown <b>only after admin approval</b>.";
 }
+function referralCenterButtons(): string { return kb([[['text'=>'📋 Copy / Share Referral Link','web_app'=>['url'=>configWebAppUrl().'?refcenter=1']]],[['text'=>'⬅️ Home','callback_data'=>'home']]]); }
 
 function createReferralStarsInvoice(int $uid): void
 {
-    if(!rateLimit('referral_stars_invoice',5,60,$uid)){
-        sendMsg($uid,'⏳ Please wait before opening another referral Stars payment.');
-        return;
-    }
-    $payments=readJson('payments');
-    do {
-        $paymentId='REFSTAR-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));
-    } while(isset($payments[$paymentId]));
-    $payload='MAYA_REF_STARS|'.$paymentId.'|'.$uid;
-    $payments[$paymentId]=[
-        'id'=>$paymentId,
-        'user_id'=>$uid,
-        'method'=>'stars',
-        'type'=>'referral',
-        'gateway'=>'telegram_stars',
-        'amount'=>REFERRAL_STARS_PRICE,
-        'currency'=>'XTR',
-        'status'=>'stars_created',
-        'created_at'=>now(),
-        'approved_at'=>0,
-        'expires_at'=>0,
-        'stars_charge_id'=>'',
-        'payment_id'=>$paymentId,
-        'invoice_payload'=>$payload
-    ];
-    writeJson('payments',$payments);
-    $r=tg('sendInvoice',[
-        'chat_id'=>$uid,
-        'title'=>'MAYAMUSIC Refer & Earn',
-        'description'=>'Referral activation — admin approval required',
-        'payload'=>$payload,
-        'currency'=>'XTR',
-        'prices'=>json_encode([['label'=>'Referral Activation','amount'=>REFERRAL_STARS_PRICE]],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),
-        'start_parameter'=>'maya-referral-stars'
-    ]);
-    if(!($r['ok']??false)){
-        $ps=readJson('payments');
-        if(isset($ps[$paymentId])){
-            $ps[$paymentId]['status']='invoice_failed';
-            $ps[$paymentId]['error']=(string)($r['description']??'Invoice failed');
-            writeJson('payments',$ps);
+    if(referralActivated($uid)){ sendMsg($uid,'🟢 <b>Refer & Earn is already activated.</b>'); return; }
+    $existing=existingReferralPayment($uid);
+    if(is_array($existing)){
+        $status=(string)($existing['status']??'');
+        if($status==='approved'){ updateUser($uid,['referral_activated'=>true,'referral_activated_at'=>(int)($existing['approved_at']??now())]); sendReferral($uid); return; }
+        if(in_array($status,['pending','referral_stars_pending_admin'],true)){ sendMsg($uid,'🟡 <b>Referral payment already submitted.</b>\n\nPlease wait for admin approval.'); return; }
+        if($status==='declined'){ sendMsg($uid,'❌ <b>Referral activation payment was declined.</b>\n\nOnly one activation payment is allowed for this Telegram user ID. Please contact support.'); return; }
+        if(($existing['method']??'')==='upi'){
+            sendMsg($uid,'💳 <b>Existing one-time referral payment</b>\n\nA second payment will not be created.', ['reply_markup'=>kb([[['text'=>'💳 OPEN PAY • ₹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode((string)$existing['id'])]]],[['text'=>'⬅️ Refer & Earn','callback_data'=>'referral']]])]);
+            return;
         }
-        sendMsg($uid,'❌ Telegram Stars payment could not be opened. Please try UPI.');
+        sendMsg($uid,'⭐ <b>Existing Telegram Stars payment</b>\n\nA second payment will not be created. Complete the existing invoice.'); return;
     }
+    if(!rateLimit('referral_stars_invoice',5,60,$uid)){sendMsg($uid,'⏳ Please wait before opening another referral Stars payment.');return;}
+    $payments=readJson('payments'); do{$paymentId='REFSTAR-'.date('ymdHis').'-'.strtoupper(bin2hex(random_bytes(5)));}while(isset($payments[$paymentId]));
+    $payload='MAYA_REF_STARS|'.$paymentId.'|'.$uid;
+    $payments[$paymentId]=['id'=>$paymentId,'user_id'=>$uid,'method'=>'stars','type'=>'referral','gateway'=>'telegram_stars','amount'=>REFERRAL_STARS_PRICE,'currency'=>'XTR','status'=>'stars_created','created_at'=>now(),'approved_at'=>0,'expires_at'=>0,'stars_charge_id'=>'','payment_id'=>$paymentId,'invoice_payload'=>$payload,'activation_locked'=>true];
+    if(!writeJson('payments',$payments)){sendMsg($uid,'❌ Unable to create referral payment.');return;}
+    updateUser($uid,['referral_activation_payment_id'=>$paymentId]);
+    $r=tg('sendInvoice',['chat_id'=>$uid,'title'=>'MAYAMUSIC Refer & Earn','description'=>'One-time referral activation — admin approval required','payload'=>$payload,'currency'=>'XTR','prices'=>json_encode([['label'=>'Referral Activation','amount'=>REFERRAL_STARS_PRICE]],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),'start_parameter'=>'maya-referral-stars']);
+    if(!($r['ok']??false)){ $ps=readJson('payments'); if(isset($ps[$paymentId])){$ps[$paymentId]['status']='invoice_failed';$ps[$paymentId]['error']=(string)($r['description']??'Invoice failed');writeJson('payments',$ps);} sendMsg($uid,'❌ Telegram Stars payment could not be opened. Please use UPI.'); }
 }
 
 function sendReferral(int $uid): void
 {
-    if (!requireVerification($uid)) return;
-    $pid=referralPayment($uid);
-    $url=configWebAppUrl().'?pay='.rawurlencode($pid);
-    sendMsg($uid,
-        referralPageText($uid)."\n\n<b>Choose activation method:</b>\n💳 <b>₹".REFERRAL_PRICE." UPI</b> — secure 5-minute payment QR\n⭐ <b>".REFERRAL_STARS_PRICE." Telegram Stars</b> — Telegram checkout",
-        ['reply_markup'=>kb([
-            [['text'=>'💳 PAY ₹'.REFERRAL_PRICE.' • UPI','web_app'=>['url'=>$url]]],
-            [['text'=>'⭐ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],
-            [['text'=>'⬅️ Home','callback_data'=>'home']]
-        ])]
-    );
+    if(!requireVerification($uid))return;
+    if(referralActivated($uid)){
+        sendMsg($uid,referralPageText($uid)."\n\n<b>Your referral link is unlocked.</b>\nUse the button below to copy or share it.",['reply_markup'=>referralCenterButtons()]); return;
+    }
+    $existing=existingReferralPayment($uid);
+    if(is_array($existing)){
+        $status=(string)($existing['status']??'');
+        if($status==='approved'){updateUser($uid,['referral_activated'=>true,'referral_activated_at'=>(int)($existing['approved_at']??now())]);sendReferral($uid);return;}
+        if(in_array($status,['pending','referral_stars_pending_admin'],true)){sendMsg($uid,referralPageText($uid)."\n\n🟡 <b>Payment submitted.</b>\nWaiting for admin approval.\n\n<b>Referral link remains locked until approval.</b>");return;}
+        if($status==='declined'){sendMsg($uid,referralPageText($uid)."\n\n❌ <b>Payment was declined.</b>\nOnly one activation payment is allowed for this Telegram user ID. Please contact support.");return;}
+        if(($existing['method']??'')==='upi'){
+            sendMsg($uid,referralPageText($uid)."\n\n<b>Complete your one-time activation:</b>",['reply_markup'=>kb([[['text'=>'💳 OPEN PAY • ₹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode((string)$existing['id'])]]],[['text'=>'⭐ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],[['text'=>'⬅️ Home','callback_data'=>'home']]])]); return;
+        }
+        sendMsg($uid,referralPageText($uid)."\n\n⭐ <b>Complete the existing Telegram Stars payment.</b>\nA second payment will not be created."); return;
+    }
+    sendMsg($uid,referralPageText($uid)."\n\n<b>Choose your one-time activation method:</b>",['reply_markup'=>kb([[['text'=>'💳 PAY ₹'.REFERRAL_PRICE.' • UPI','callback_data'=>'referral_upi_pay']],[['text'=>'⭐ Pay '.REFERRAL_STARS_PRICE.' Telegram Stars','callback_data'=>'referral_stars_pay']],[['text'=>'⬅️ Home','callback_data'=>'home']]])]);
 }
 
-function bindReferralFromStart(int $uid, string $args): void
+function bindReferralFromStart(int $uid,string $args): void
 {
-    $code=parseReferralArg($args); if($code==='') return;
-    $u=userRecord($uid);
-    if (($u['referred_by']??'')!=='') return;
+    $code=parseReferralArg($args); if($code==='')return; $u=userRecord($uid); if(($u['referred_by']??'')!=='')return;
     $referrer=findUserByRefCode($code);
-    if($referrer<=0 || $referrer===$uid) return;
+    if($referrer<=0||$referrer===$uid||!referralActivated($referrer)){auditLog('referral_rejected',$uid,['referrer'=>$referrer,'code'=>$code,'reason'=>'referrer_not_activated']);return;}
     updateUser($uid,['referred_by'=>$code,'referrer_id'=>$referrer,'referral_verified'=>false]);
     auditLog('referral_bound',$uid,['referrer'=>$referrer,'code'=>$code]);
 }
 
-function finalizeReferral(int $paymentUser, string $paymentId): void
+function finalizeReferral(int $paymentUser,string $paymentId): void
 {
-    $u=userRecord($paymentUser); if(($u['referral_verified']??false)===true) return;
-    $referrer=(int)($u['referrer_id']??0); if($referrer<=0) return;
+    $payments=readJson('payments'); $payment=$payments[$paymentId]??null;
+    if(!is_array($payment)||($payment['type']??'')!=='referral'||($payment['status']??'')!=='approved'||(int)($payment['user_id']??0)!==$paymentUser)return;
+    $u=userRecord($paymentUser); if(($u['referral_verified']??false)===true)return;
+    $referrer=(int)($u['referrer_id']??0); if($referrer<=0||!referralActivated($referrer))return;
     updateUser($paymentUser,['referral_verified'=>true]);
-    $ru=userRecord($referrer); $count=(int)($ru['referral_count']??0)+1;
-    updateUser($referrer,['referral_count'=>$count]);
-    if($count % REFERRAL_BATCH===0) addAccessHours($referrer,REFERRAL_REWARD_DAYS*24,'referral_'.$count);
+    $ru=userRecord($referrer); $count=(int)($ru['referral_count']??0)+1; updateUser($referrer,['referral_count'=>$count]);
+    if($count%REFERRAL_BATCH===0)addAccessHours($referrer,REFERRAL_REWARD_DAYS*24,'referral_'.$count);
     sendMsg($referrer,"🎉 <b>Referral confirmed!</b>\nYour total confirmed referrals: <b>$count</b>\n".($count%REFERRAL_BATCH===0?"🎁 You earned <b>".REFERRAL_REWARD_DAYS." days</b> free access.":"Keep sharing to unlock the next reward."));
     auditLog('referral_confirmed',$paymentUser,['referrer'=>$referrer,'payment'=>$paymentId]);
 }
@@ -1777,8 +1769,13 @@ function processPaymentDecision(
         return;
     }
 
-    $uid =
-        (int)$payment['user_id'];
+    $uid=(int)$payment['user_id'];
+
+    if(($payment['type']??'')==='referral'){
+        $u=userRecord($uid);
+        if((string)($u['referral_activation_payment_id']??'')!==$paymentId){sendMsg($adminId,'❌ Referral payment is not bound to this user ID.');return;}
+        if(($u['referral_activated']??false)===true){sendMsg($adminId,'⚠️ Refer & Earn is already activated for this user.');return;}
+    }
 
     if ($approve) {
         $isReferral = (($payment['type'] ?? '') === 'referral');
@@ -1797,9 +1794,10 @@ function processPaymentDecision(
         writeJson('payments', $payments);
 
         if ($isReferral) {
-            finalizeReferral($uid, $paymentId);
-            sendMsg($uid,"✅ <b>Referral activation verified.</b>\n\nYour ₹".REFERRAL_PRICE." UPI / ⭐ ".REFERRAL_STARS_PRICE." Stars payment has been approved. The referral has been confirmed. The inviter receives the referral credit after verification.");
-            sendMsg($adminId,"✅ Referral payment approved.\nUser: <code>".$uid."</code>\nPayment: <code>".esc($paymentId)."</code>");
+            updateUser($uid,['referral_activated'=>true,'referral_activated_at'=>now(),'referral_activation_payment_id'=>$paymentId]);
+            finalizeReferral($uid,$paymentId);
+            sendMsg($uid,"✅ <b>REFER & EARN ACTIVATED</b>\n\nYour one-time activation payment has been approved.\n🎁 Your referral link is now unlocked.\n\nTap <b>🎁 Refer & Earn</b> to copy and share it.");
+            sendMsg($adminId,"✅ <b>Referral payment approved.</b>\nUser: <code>".$uid."</code>\nPayment: <code>".esc($paymentId)."</code>");
         } else {
             sendMsg($uid,"✅ <b>Payment Approved</b>\n\n⭐ Premium activated.\n\nValid until:\n<b>".fmtDate($until)."</b>");
             sendMsg($adminId,"✅ Payment approved.\nUser: <code>".$uid."</code>\nUntil: <b>".fmtDate($until)."</b>");
@@ -1869,8 +1867,7 @@ function adminPanel(int $uid): void
 
     foreach ($payments as $payment) {
         if (
-            ($payment['status'] ?? '')
-            === 'pending'
+            in_array(($payment['status'] ?? ''), ['pending','referral_stars_pending_admin'], true)
         ) {
             $pending++;
         }
@@ -2035,7 +2032,9 @@ function handleAdminCommand(
             sendMsg($uid, "Usage: <code>/discount PERCENT [DAYS] [MAX_USES]</code>\nExample: <code>/discount 20 30 100</code>");
             return true;
         }
-        $code = createDiscountCode($percent, $uid, $days, $uses);
+        try { $code=createDiscountCode($percent,$uid,$days,$uses); } catch(Throwable $e) { error_log('MAYAMUSIC discount creation: '.$e->getMessage()); sendMsg($uid,'❌ <b>Discount code could not be created.</b>
+
+Make sure the <code>data</code> folder is writable.'); return true; }
         $codes = readJson('discounts');
         $item = $codes[$code];
         sendMsg($uid, "🎟 <b>DISCOUNT CODE GENERATED</b>\n\n<code>" . esc($code) . "</code>\n\nDiscount: <b>" . $percent . "% OFF</b>\nValid: <b>" . fmtDate((int)$item['expires_at']) . "</b>\nMax uses: <b>" . $uses . "</b>");
@@ -2282,7 +2281,7 @@ function adminStats(int $uid): void
                 );
         }
 
-        if ($status === 'pending') {
+        if (in_array($status, ['pending','referral_stars_pending_admin'], true)) {
             $pending++;
         }
     }
@@ -3760,6 +3759,37 @@ function handleCallback(
         return;
     }
 
+    if ($data === 'referral_upi_pay') {
+        answerCb($id, 'Opening secure PAY…');
+        if (!requireVerification($uid)) return;
+        if (referralActivated($uid)) {
+            sendMsg($uid, '🟢 <b>Refer & Earn is already activated.</b>', ['reply_markup'=>referralCenterButtons()]);
+            return;
+        }
+        $existing = existingReferralPayment($uid);
+        if (is_array($existing)) {
+            $paymentId = (string)$existing['id'];
+            $status = (string)($existing['status'] ?? '');
+            if ($status === 'approved') {
+                updateUser($uid, ['referral_activated'=>true,'referral_activated_at'=>(int)($existing['approved_at'] ?? now())]);
+                sendReferral($uid);
+                return;
+            }
+            if ($status === 'pending') {
+                sendMsg($uid, '🟡 <b>Payment already submitted.</b>\n\nPlease wait for admin approval.');
+                return;
+            }
+            if ($status === 'declined') {
+                sendMsg($uid, '❌ <b>This one-time referral payment was declined.</b>\n\nPlease contact support.');
+                return;
+            }
+        } else {
+            $paymentId = referralPayment($uid);
+        }
+        sendMsg($uid, '<b>💳 REFER & EARN • PAY</b>\n\nOne-time activation: <b>₹'.REFERRAL_PRICE.'</b>\nQR validity: <b>5 minutes</b>\n\nYour referral link will remain locked until admin approval.', ['reply_markup'=>kb([[['text'=>'💳 OPEN PAY • ₹'.REFERRAL_PRICE,'web_app'=>['url'=>configWebAppUrl().'?pay='.rawurlencode($paymentId)]]],[['text'=>'⬅️ Refer & Earn','callback_data'=>'referral']]])]);
+        return;
+    }
+
     if ($data === 'referral_stars_pay') {
         answerCb($id, 'Opening Telegram Stars…');
         createReferralStarsInvoice($uid);
@@ -4997,7 +5027,17 @@ function buildUpiUri(array $p): string {
     return 'upi://pay?pa='.rawurlencode(UPI_ID).'&pn='.rawurlencode(UPI_NAME).'&am='.rawurlencode($amount).'&cu=INR&tr='.rawurlencode($id).'&tn='.rawurlencode('MAYAMUSIC Premium '.$id);
 }
 function buildQrUrl(array $p): string { return 'https://api.qrserver.com/v1/create-qr-code/?size=700x700&margin=12&qzone=2&data='.rawurlencode(buildUpiUri($p)); }
-function paymentForUser(string $id,int $uid): ?array { if($id===''||strlen($id)>80)return null; $ps=readJson('payments'); $p=$ps[$id]??null; if(!is_array($p)||($p['method']??'')!=='upi'||(int)($p['user_id']??0)!==$uid)return null; return $p; }
+function paymentForUser(string $id,int $uid): ?array
+{
+    if($id===''||strlen($id)>80||$uid<=0)return null;
+    $ps=readJson('payments'); $p=$ps[$id]??null;
+    if(!is_array($p)||($p['method']??'')!=='upi'||(int)($p['user_id']??0)!==$uid)return null;
+    if(($p['type']??'')==='referral'){
+        $u=userRecord($uid);
+        if(referralActivated($uid)||(string)($u['referral_activation_payment_id']??'')!==$id)return null;
+    }
+    return $p;
+}
 function paymentInfoForMiniApp(string $id,int $uid): array {
     $p=paymentForUser($id,$uid); if($p===null)return ['ok'=>false,'error'=>'payment_not_found','message'=>'Payment session not found.'];
     $status=(string)($p['status']??'created'); $expired=(int)($p['expires_at']??0)>0&&(int)$p['expires_at']<=now()&&$status==='created'; if($expired)$status='expired';
@@ -5011,8 +5051,13 @@ function applyPaymentDiscount(int $uid,string $id,string $raw): array {
     $pct=max(1,min(90,(int)($c['percent']??0))); $p['discount_code']=$code; $p['discount_percent']=$pct; $p['amount']=discountedAmount((int)($p['base_amount']??MONTHLY_PRICE),$pct); $ps[$id]=$p; writeJson('payments',$ps); auditLog('discount_applied',$uid,['payment'=>$id,'code'=>$code,'percent'=>$pct]); return paymentInfoForMiniApp($id,$uid);
 }
 function submitMiniPaymentUtr(int $uid,string $id,string $utr): array {
-    $ps=readJson('payments'); $p=$ps[$id]??null; if(!is_array($p)||(int)($p['user_id']??0)!==$uid||($p['method']??'')!=='upi')return ['ok'=>false,'message'=>'Payment session not found.'];
-    if(($p['status']??'')!=='created')return ['ok'=>false,'message'=>'This payment is already submitted or processed.']; if((int)($p['expires_at']??0)<=now())return ['ok'=>false,'message'=>'Payment QR expired. Open PAY again for a fresh QR.'];
+    $ps=readJson('payments'); $p=$ps[$id]??null;
+    if(!is_array($p)||(int)($p['user_id']??0)!==$uid||($p['method']??'')!=='upi')return ['ok'=>false,'message'=>'Payment session not found.'];
+    if(($p['type']??'')==='referral'){
+        $u=userRecord($uid);
+        if(referralActivated($uid)||(string)($u['referral_activation_payment_id']??'')!==$id)return ['ok'=>false,'message'=>'Referral activation is already completed or this payment does not belong to this user ID.'];
+    }
+    if(($p['status']??'')!=='created')return ['ok'=>false,'message'=>'This payment is already submitted or processed.']; if((int)($p['expires_at']??0)<=now())return ['ok'=>false,'message'=>'Payment QR expired. Open Refer & Earn again to continue the same activation payment.'];
     $utr=trim($utr); if(!preg_match('/^[A-Za-z0-9][A-Za-z0-9 ._\/-]{5,60}$/',$utr))return ['ok'=>false,'message'=>'Enter a valid UTR / transaction ID.'];
     foreach($ps as $eid=>$e){if($eid!==$id&&strcasecmp((string)($e['utr']??''),$utr)===0&&in_array(($e['status']??''),['pending','approved'],true))return ['ok'=>false,'message'=>'This UTR is already used.'];}
     $p['utr']=$utr; $p['status']='pending'; $p['utr_submitted_at']=now(); $p['processing_message']='Manual verification pending';
@@ -5042,6 +5087,14 @@ HTML;
     echo $html;
 }
 
+function referralCenterPage(): void
+{
+    secureHeaders();
+    echo <<<'HTML'
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>MAYAMUSIC • Refer & Earn</title><style>*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -10%,#27313c 0,#090c10 48%,#050608 100%);color:#fff;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:520px;margin:auto;padding:calc(22px + env(safe-area-inset-top)) 18px calc(30px + env(safe-area-inset-bottom))}.card{background:rgba(18,22,27,.92);border:1px solid rgba(255,255,255,.12);border-radius:28px;padding:24px;box-shadow:0 20px 80px rgba(0,0,0,.45);backdrop-filter:blur(18px)}h1{text-align:center;font-size:25px;margin:0 0 6px;font-weight:950}.sub{text-align:center;color:#9da6b1;font-size:12px;margin-bottom:22px}.label{font-size:12px;color:#9da6b1;font-weight:800;margin-bottom:7px}.link{background:#0c1015;border:1px solid rgba(255,255,255,.12);border-radius:15px;padding:14px;word-break:break-all;font-size:13px;line-height:1.5}.btn{width:100%;border:0;border-radius:15px;padding:14px 16px;font-weight:900;font-size:15px;color:#fff;background:#171d24;margin-top:11px}.primary{background:#fff;color:#050608}.status{text-align:center;min-height:24px;margin-top:14px;font-weight:800}.ok{color:#42e28a}.bad{color:#ff5757}.small{font-size:11px;color:#8e98a3;text-align:center;margin-top:14px}</style></head><body><main class="wrap"><section class="card"><h1>🎁 REFER & EARN</h1><div class="sub">Your activated personal referral center</div><div class="label">YOUR REFERRAL LINK</div><div class="link" id="link">Loading secure referral link…</div><button class="btn primary" id="copy" disabled>📋 COPY LINK</button><button class="btn" id="share" disabled>📤 SHARE LINK</button><div class="status" id="status"></div><div class="small">Your link is available only after one-time activation and is locked to your Telegram user ID.</div></section></main><script src="https://telegram.org/js/telegram-web-app.js"></script><script>const tg=window.Telegram&&window.Telegram.WebApp?window.Telegram.WebApp:null;if(tg){tg.ready();tg.expand()}const $=id=>document.getElementById(id);async function load(){try{const body=new URLSearchParams({action:'referral_info',initData:tg?tg.initData:''});const r=await fetch(location.pathname+'?action=referral_info',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});const d=await r.json();if(!d.ok){$('link').textContent=d.message||'Referral not available.';$('status').textContent='Access denied';$('status').className='status bad';return}$('link').textContent=d.link;$('copy').disabled=false;$('share').disabled=false;$('copy').onclick=async()=>{try{await navigator.clipboard.writeText(d.link);$('status').textContent='✓ Link copied';$('status').className='status ok'}catch(e){$('status').textContent='Press and hold the link to copy it.'}};$('share').onclick=()=>{if(tg&&tg.openTelegramLink)tg.openTelegramLink(d.shareUrl);else location.href=d.shareUrl}}catch(e){$('status').textContent='Unable to load referral link.';$('status').className='status bad'}}load();</script></body></html>
+HTML;
+}
+
 /* ============================================================
    MINI APP API
    ============================================================ */
@@ -5058,6 +5111,15 @@ function miniApi(): void
         if ($action==='payment_info') jsonReply(paymentInfoForMiniApp($paymentId,$uid));
         if ($action==='apply_discount') jsonReply(applyPaymentDiscount($uid,$paymentId,(string)($_POST['code'] ?? '')));
         if ($action==='submit_utr') { if(!rateLimit('mini_utr',5,300,$uid)) jsonReply(['ok'=>false,'message'=>'Too many attempts. Please wait a few minutes.']); jsonReply(submitMiniPaymentUtr($uid,$paymentId,(string)($_POST['utr'] ?? ''))); }
+    }
+
+    if($action==='referral_info'){
+        $auth=validateTelegramInitData(trim((string)($_POST['initData']??'')));
+        if($auth===null)jsonReply(['ok'=>false,'message'=>'Invalid Telegram session.']);
+        $uid=(int)$auth['user_id'];
+        if(!referralActivated($uid))jsonReply(['ok'=>false,'message'=>'Refer & Earn is not activated yet.']);
+        $link=referralUrl($uid);
+        jsonReply(['ok'=>true,'userId'=>$uid,'link'=>$link,'shareUrl'=>'https://t.me/share/url?url='.rawurlencode($link).'&text='.rawurlencode('Join MAYAMUSIC using my referral link 🎵')]);
     }
 
     if($action==='lyrics'){
@@ -5138,6 +5200,7 @@ function healthPage(): void
 function handleHttp(): bool
 {
     if(isset($_GET['pay'])){payPage();return true;}
+    if(isset($_GET['refcenter'])){referralCenterPage();return true;}
     if(isset($_GET['policy'])){privacyPolicyPage();return true;}
     if(isset($_GET['radhe'])){radhePage();return true;}
 
@@ -5209,6 +5272,8 @@ function handleSuccessfulStarsPayment(array $message): void
     }
 
     if ($isReferral) {
+        $u=userRecord($uid);
+        if((string)($u['referral_activation_payment_id']??'')!==$paymentId||($u['referral_activated']??false)===true){auditLog('referral_stars_activation_mismatch',$uid,['payment'=>$paymentId]);return;}
         if (($payment['status'] ?? '') !== 'stars_created') return;
         $payment['status'] = 'referral_stars_pending_admin';
         $payment['stars_charge_id'] = $charge;
@@ -5349,7 +5414,9 @@ function processWebhook(): void
             $expectedAmount = $isReferral ? REFERRAL_STARS_PRICE : TELEGRAM_STARS_PRICE;
             $payments = readJson('payments');
             $payment = $payments[$paymentId] ?? null;
-            if (is_array($payment) && (int)($payment['user_id'] ?? 0) === $fromId && $payloadUid === $fromId && ($payment['status'] ?? '') === 'stars_created' && (string)($query['currency'] ?? '') === 'XTR' && (int)($query['total_amount'] ?? 0) === $expectedAmount) {
+            $refOk=true;
+            if($isReferral){$u=userRecord($fromId);$refOk=(string)($u['referral_activation_payment_id']??'')===$paymentId&&($u['referral_activated']??false)!==true;}
+            if (is_array($payment) && (int)($payment['user_id'] ?? 0) === $fromId && $payloadUid === $fromId && $refOk && ($payment['status'] ?? '') === 'stars_created' && (string)($query['currency'] ?? '') === 'XTR' && (int)($query['total_amount'] ?? 0) === $expectedAmount) {
                 $ok = true;
                 $error = '';
             }
